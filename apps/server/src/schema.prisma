@@ -43,6 +43,7 @@ model Tag {
   category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   timeEntries TimeEntry[]
   goals      Goal[]
+  memos      Memo[]
 
   @@unique([name, categoryId])
 }
@@ -56,8 +57,9 @@ model TimeEntry {
   tagId     String
   todoId    String?
 
-  tag       Tag   @relation(fields: [tagId], references: [id], onDelete: Restrict)
-  todo      Todo? @relation(fields: [todoId], references: [id], onDelete: SetNull)
+  tag       Tag    @relation(fields: [tagId], references: [id], onDelete: Restrict)
+  todo      Todo?  @relation(fields: [todoId], references: [id], onDelete: SetNull)
+  memos     Memo[]
 
   createdAt DateTime @default(now())
 
@@ -106,3 +108,37 @@ model Goal {
   @@index([tagId])
   @@index([active])
 }
+
+/// 记事/日记：与 TimeEntry 建立勾稽关联，支持富文本与多媒体附件
+model Memo {
+  id          String   @id @default(cuid())
+  content     String   // 记事/日记内容
+  timeEntryId String?  // 关联的具体计时记录
+  tagId       String?  // 可选关联标签
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  timeEntry   TimeEntry?   @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+  tag         Tag?         @relation(fields: [tagId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@index([timeEntryId])
+  @@index([createdAt])
+  @@index([tagId])
+}
+
+/// 附件：图片或视频文件
+model Attachment {
+  id        String   @id @default(cuid())
+  memoId    String
+  filename  String   // 原始文件名
+  path      String   // 相对访问路径 /uploads/xxx.jpg
+  mimeType  String   // image/png, video/mp4 等
+  size      Int      // 文件大小(bytes)
+  createdAt DateTime @default(now())
+
+  memo      Memo     @relation(fields: [memoId], references: [id], onDelete: Cascade)
+
+  @@index([memoId])
+}
+

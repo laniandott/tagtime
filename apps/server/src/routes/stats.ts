@@ -46,9 +46,9 @@ export default async function statsRoutes(app: FastifyInstance) {
       }),
     ])
 
-    const todayMs = todayEntries.reduce((s, e) => s + durationMs(e.startTime, e.endTime), 0)
-    const weekMs = weekEntries.reduce((s, e) => s + durationMs(e.startTime, e.endTime), 0)
-    const monthMs = monthEntries.reduce((s, e) => s + durationMs(e.startTime, e.endTime), 0)
+    const todayMs = todayEntries.reduce((s: number, e: { startTime: Date; endTime: Date | null }) => s + durationMs(e.startTime, e.endTime), 0)
+    const weekMs = weekEntries.reduce((s: number, e: { startTime: Date; endTime: Date | null }) => s + durationMs(e.startTime, e.endTime), 0)
+    const monthMs = monthEntries.reduce((s: number, e: { startTime: Date; endTime: Date | null }) => s + durationMs(e.startTime, e.endTime), 0)
 
     // 今日按分类聚合
     const byCategory = new Map<string, { name: string; color: string; ms: number }>()
@@ -165,38 +165,6 @@ export default async function statsRoutes(app: FastifyInstance) {
       }
       cur.ms += durationMs(e.startTime, e.endTime)
       map.set(e.tagId, cur)
-    }
-    return Array.from(map.values()).sort((a, b) => b.ms - a.ms)
-  })
-
-  // 按分类聚合（指定日期范围）
-  app.get('/by-category', async (req) => {
-    const { from, to } = req.query as { from?: string; to?: string }
-    const end = to ? new Date(to) : new Date()
-    let start: Date
-    if (from) {
-      start = new Date(from)
-    } else {
-      start = new Date(end.getFullYear(), end.getMonth(), end.getDate())
-      start.setDate(start.getDate() - 6)
-    }
-
-    const entries = await prisma.timeEntry.findMany({
-      where: { startTime: { gte: start, lte: end } },
-      include: { tag: { include: { category: true } } },
-    })
-
-    const map = new Map<string, { name: string; color: string; ms: number }>()
-    for (const e of entries) {
-      const cat = e.tag.category
-      const key = cat?.id ?? 'uncategorized'
-      const cur = map.get(key) ?? {
-        name: cat?.name ?? '未分类',
-        color: cat?.color ?? '#9ca3af',
-        ms: 0,
-      }
-      cur.ms += durationMs(e.startTime, e.endTime)
-      map.set(key, cur)
     }
     return Array.from(map.values()).sort((a, b) => b.ms - a.ms)
   })

@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { api } from '../api'
 import { formatDuration } from '../store'
-import type { TimeEntry } from '../types'
+import type { TimeEntry, Memo } from '../types'
+import { MemoCreateModal, MemoEditModal } from './TimerPage'
 
 // ===== 日期工具函数 =====
 
@@ -208,24 +209,37 @@ export default function CalendarPage() {
     setCurrentDate(d)
   }
 
-  // 按天分组条目
+  // 按天分组条目（跨午夜的计时会出现在它跨越的每一天）
   const entriesByDay = useMemo(() => {
     const map = new Map<string, TimeEntry[]>()
     for (const e of entries) {
-      const dayKey = startOfDay(new Date(e.startTime)).toISOString()
-      if (!map.has(dayKey)) map.set(dayKey, [])
-      map.get(dayKey)!.push(e)
+      const entryStart = startOfDay(new Date(e.startTime))
+      const entryEnd = e.endTime ? startOfDay(new Date(e.endTime)) : startOfDay(new Date())
+      // 遍历计时跨越的每一天
+      const cur = new Date(entryStart)
+      while (cur <= entryEnd) {
+        const dayKey = cur.toISOString()
+        if (!map.has(dayKey)) map.set(dayKey, [])
+        map.get(dayKey)!.push(e)
+        cur.setDate(cur.getDate() + 1)
+      }
     }
     return map
   }, [entries])
 
-  // 计算当日总时长
+  // 计算当日总时长（跨午夜计时只计算当天部分）
   const dayTotal = useCallback((day: Date): number => {
     const key = startOfDay(day).toISOString()
     const dayEntries = entriesByDay.get(key) ?? []
+    const dStart = startOfDay(day).getTime()
+    const dEnd = endOfDay(day).getTime()
     return dayEntries.reduce((sum, e) => {
-      const end = e.endTime ? new Date(e.endTime).getTime() : Date.now()
-      return sum + (end - new Date(e.startTime).getTime())
+      const eStart = new Date(e.startTime).getTime()
+      const eEnd = e.endTime ? new Date(e.endTime).getTime() : Date.now()
+      // 裁剪到当天范围
+      const clippedStart = Math.max(eStart, dStart)
+      const clippedEnd = Math.min(eEnd, dEnd)
+      return sum + (clippedEnd - clippedStart)
     }, 0)
   }, [entriesByDay])
 
@@ -321,6 +335,9 @@ export default function CalendarPage() {
 
       {/* 条目详情弹窗 */}
       {selectedEntry && <EntryDetail entry={selectedEntry} onClose={() => setSelectedEntry(null)} />}
+
+      {/* 沉浸式动态时间线 (Memos & 多媒体) */}
+      <TimelineSection />
     </div>
   )
 }
@@ -486,7 +503,9 @@ function WeekView({ weekStart, entries, now, onEntryClick }: {
           const dayEnd = endOfDay(d).getTime()
           const dayEntries = entries.filter((e) => {
             const es = new Date(e.startTime).getTime()
-            return es >= dayStart && es < dayEnd
+            const ee = e.endTime ? new Date(e.endTime).getTime() : Date.now()
+            // 计时与该天有重叠即显示（支持跨午夜）
+            return es < dayEnd && ee > dayStart
           })
           const layout = layoutEntries(dayEntries, dayStart, dayEnd)
           const showNowLine = isToday(d)
@@ -663,6 +682,242 @@ function EntryDetail({ entry, onClose }: {
           关闭
         </button>
       </div>
+    </div>
+  )
+}
+
+// ===== 动态时间线 (Timeline Section) =====
+function TimelineSection() {
+  const [days, setDays] = useState<1 | 7 | 30>(7)
+  const [memos, setMemos] = useState<Memo[]>([])
+  const [loading, setLoading] = useState(false)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [activeAddModalEntry, setActiveAddModalEntry] = useState<TimeEntry | null>(null)
+  const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const loadMemos = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api.memos.list({ days })
+      setMemos(data)
+    } catch (e) {
+      setMemos([])
+    } finally {
+      setLoading(false)
+    }
+  }, [days])
+
+  useEffect(() => {
+    loadMemos()
+  }, [loadMemos])
+
+  // 搜索过滤：匹配日记内容或关联标签名
+  const filteredMemos = useMemo(() => {
+    if (!searchQuery) return memos
+    const q = searchQuery.toLowerCase()
+    return memos.filter((m) => {
+      const content = m.content?.toLowerCase() ?? ''
+      const tagName = (m.tag?.name ?? m.timeEntry?.tag?.name ?? '').toLowerCase()
+      return content.includes(q) || tagName.includes(q)
+    })
+  }, [memos, searchQuery])
+
+  return (
+    <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-800 space-y-4">
+      {/* 标题与切片选择器 */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <span>📖 动态时间线 · 日记/随手记</span>
+            <span className="text-xs font-normal text-gray-400 hidden sm:inline">（与计时形成勾稽关系）</span>
+          </h2>
+          {/* 搜索框 */}
+          <div className="relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="搜索日记…"
+              className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-32 focus:w-44 transition-all focus:outline-none focus:border-brand"
+            />
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 text-xs font-medium">
+          {([1, 7, 30] as const).map((d) => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              className={`px-3 py-1 rounded-md transition-colors ${
+                days === d
+                  ? 'bg-white dark:bg-gray-700 text-brand shadow-sm font-semibold'
+                  : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+              }`}
+            >
+              {d === 1 ? '1天 (今天)' : d === 7 ? '7天 (本周)' : '30天 (本月)'}
+            </button>
+          ))}
+          </div>
+      </div>
+
+      {/* 动态卡片时间轴流 */}
+      {loading ? (
+        <div className="text-center py-8 text-gray-400 text-sm">加载时间线...</div>
+      ) : filteredMemos.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-gray-200 dark:border-gray-800 p-8 text-center text-gray-400 text-sm">
+          {searchQuery
+            ? '未找到匹配的日记'
+            : `近 ${days === 1 ? '1 天' : `${days} 天`} 暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！`}
+        </div>
+      ) : (
+        <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-200 dark:before:bg-gray-800">
+          {filteredMemos.map((memo) => {
+            const timeStr = new Date(memo.createdAt).toLocaleString('zh-CN', {
+              month: 'numeric',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+            const tagColor = memo.tag?.color ?? memo.timeEntry?.tag?.color ?? '#6d5efc'
+            const tagName = memo.tag?.name ?? memo.timeEntry?.tag?.name ?? '随手记'
+            const categoryName = memo.tag?.category?.name ?? memo.timeEntry?.tag?.category?.name
+
+            const images = memo.attachments?.filter((a) => a.mimeType.startsWith('image/')) ?? []
+            const videos = memo.attachments?.filter((a) => a.mimeType.startsWith('video/')) ?? []
+
+            return (
+              <div key={memo.id} className="relative group">
+                {/* 时间轴锚点 */}
+                <div
+                  className="absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900"
+                  style={{ background: tagColor }}
+                />
+
+                {/* 内容卡片 */}
+                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4 space-y-3 shadow-sm hover:shadow transition-shadow">
+                  {/* 头部：勾稽计时与标签 */}
+                  <div className="flex items-center justify-between text-xs text-gray-400 flex-wrap gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-700 dark:text-gray-200">{timeStr}</span>
+                      <span
+                        className="px-2 py-0.5 rounded-full font-medium"
+                        style={{ backgroundColor: `${tagColor}20`, color: tagColor }}
+                      >
+                        {categoryName ? `${categoryName} / ` : ''}{tagName}
+                      </span>
+                      {memo.timeEntry && (
+                        <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
+                          ⏱ 关联计时: {formatDuration(
+                            (memo.timeEntry.endTime
+                              ? new Date(memo.timeEntry.endTime).getTime()
+                              : Date.now()) - new Date(memo.timeEntry.startTime).getTime()
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setEditingMemo(memo)}
+                        className="text-gray-300 hover:text-brand opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        编辑
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm('确定要删除这条记事吗？')) return
+                          await api.memos.remove(memo.id)
+                          loadMemos()
+                        }}
+                        className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 文本内容 */}
+                  <div className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
+                    {memo.content}
+                  </div>
+
+                  {/* 图片展示 (网格) */}
+                  {images.length > 0 && (
+                    <div className={`grid gap-2 ${images.length === 1 ? 'grid-cols-1 max-w-sm' : images.length === 2 ? 'grid-cols-2 max-w-md' : 'grid-cols-3 max-w-lg'}`}>
+                      {images.map((img) => (
+                        <button
+                          key={img.id}
+                          type="button"
+                          onClick={() => setPreviewImage(img.path)}
+                          className="rounded-lg overflow-hidden border border-gray-100 dark:border-gray-800 bg-gray-100 dark:bg-gray-800 aspect-square group/img relative"
+                        >
+                          <img
+                            src={img.path}
+                            alt={img.filename}
+                            className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 视频播放器 */}
+                  {videos.length > 0 && (
+                    <div className="space-y-2 max-w-md pt-1">
+                      {videos.map((vid) => (
+                        <div key={vid.id} className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 bg-black">
+                          <video
+                            src={vid.path}
+                            controls
+                            className="w-full max-h-64 object-contain"
+                          />
+                          <div className="text-[10px] text-gray-400 px-2 py-1 bg-gray-900 truncate">
+                            🎬 {vid.filename}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* 大图全屏预览弹窗 */}
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setPreviewImage(null)}
+        >
+          <img src={previewImage} alt="全屏预览" className="max-w-full max-h-full rounded-lg object-contain" />
+        </div>
+      )}
+
+      {/* 弹窗添加记事 */}
+      {activeAddModalEntry && (
+        <MemoCreateModal
+          entry={activeAddModalEntry}
+          onClose={() => setActiveAddModalEntry(null)}
+          onSaved={() => {
+            setActiveAddModalEntry(null)
+            loadMemos()
+          }}
+        />
+      )}
+
+      {/* 编辑记事弹窗 */}
+      {editingMemo && (
+        <MemoEditModal
+          memo={editingMemo}
+          onClose={() => setEditingMemo(null)}
+          onSaved={() => {
+            setEditingMemo(null)
+            loadMemos()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -1,7 +1,11 @@
 node_modules
 dist
+apps/*/dist
 data
 .env
+.env.local
 .git
 .gitignore
 *.md
+*.db
+*.tsbuildinfo

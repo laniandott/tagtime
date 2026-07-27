@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore, formatClock } from '../store'
 import { api } from '../api'
-import type { TimeEntry, Tag } from '../types'
+import type { TimeEntry, Tag, Memo } from '../types'
 import { formatDuration } from '../store'
 
 export default function TimerPage() {
@@ -12,7 +12,13 @@ export default function TimerPage() {
   const [stoppingAll, setStoppingAll] = useState(false)
   const [showManual, setShowManual] = useState(false)
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null)
+  const [memoTargetEntry, setMemoTargetEntry] = useState<TimeEntry | null>(null)
   const [filterCat, setFilterCat] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  // 最近记录日期范围：默认显示当天
+  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7days' | '30days' | 'custom'>('today')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
 
   // 每秒刷新计时显示（有进行中的计时时）
   useEffect(() => {
@@ -22,15 +28,42 @@ export default function TimerPage() {
     return () => clearInterval(t)
   }, [running.length])
 
-  // 加载最近记录
+  // 加载最近记录（按日期范围筛选）
   const loadRecent = async () => {
-    const list = await api.timer.list().catch(() => [])
+    let from: string | undefined
+    let to: string | undefined
+    const now = new Date()
+
+    if (dateRange === 'today') {
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
+      to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString()
+    } else if (dateRange === 'yesterday') {
+      const y = new Date(now)
+      y.setDate(y.getDate() - 1)
+      from = new Date(y.getFullYear(), y.getMonth(), y.getDate()).toISOString()
+      to = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59).toISOString()
+    } else if (dateRange === '7days') {
+      const f = new Date(now)
+      f.setDate(f.getDate() - 6)
+      from = new Date(f.getFullYear(), f.getMonth(), f.getDate()).toISOString()
+      to = now.toISOString()
+    } else if (dateRange === '30days') {
+      const f = new Date(now)
+      f.setDate(f.getDate() - 29)
+      from = new Date(f.getFullYear(), f.getMonth(), f.getDate()).toISOString()
+      to = now.toISOString()
+    } else if (dateRange === 'custom') {
+      if (customFrom) from = new Date(customFrom + 'T00:00:00').toISOString()
+      if (customTo) to = new Date(customTo + 'T23:59:59').toISOString()
+    }
+
+    const list = await api.timer.list({ from, to }).catch(() => [])
     setRecent(list)
   }
 
   useEffect(() => {
     loadRecent()
-  }, [running.length])
+  }, [running.length, dateRange, customFrom, customTo])
 
   // 计算某条计时的已用时长（用 clockOffset 修正容器时钟偏差）
   const elapsedOf = (entry: TimeEntry) =>
@@ -107,6 +140,7 @@ export default function TimerPage() {
               elapsed={elapsedOf(entry)}
               stopping={stoppingId === entry.id}
               onStop={(note) => handleStop(entry.id, note)}
+              onAddMemo={() => setMemoTargetEntry(entry)}
             />
           ))}
         </div>
@@ -188,12 +222,62 @@ export default function TimerPage() {
       </div>
 
       {/* 最近记录 */}
-      {recent.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-              最近记录
-            </h2>
+      <div>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+            最近记录
+          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 搜索框 */}
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索标题/备注…"
+                className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-36 focus:w-48 transition-all focus:outline-none focus:border-brand"
+              />
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
+            </div>
+            {/* 日期范围快捷选项 */}
+            <div className="flex gap-1">
+              {([
+                { key: 'today', label: '今天' },
+                { key: 'yesterday', label: '昨天' },
+                { key: '7days', label: '近7天' },
+                { key: '30days', label: '近30天' },
+                { key: 'custom', label: '自定义' },
+              ] as const).map((r) => (
+                <button
+                  key={r.key}
+                  onClick={() => setDateRange(r.key)}
+                  className={`px-2 py-1 rounded-full text-xs ${dateRange === r.key ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            {/* 自定义日期区间 */}
+            {dateRange === 'custom' && (
+              <div className="flex items-center gap-1">
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  max={customTo || undefined}
+                  className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+                />
+                <span className="text-gray-400 text-xs">至</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  min={customFrom || undefined}
+                  className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+                />
+              </div>
+            )}
+            {/* 分类筛选 */}
             <select
               value={filterCat}
               onChange={(e) => setFilterCat(e.target.value)}
@@ -206,57 +290,94 @@ export default function TimerPage() {
               <option value="none">未分类</option>
             </select>
           </div>
-          <div className="space-y-2">
-            {recent
-              .filter((e) => !filterCat || (filterCat === 'none' ? !e.tag?.categoryId : e.tag?.categoryId === filterCat))
-              .slice(0, 15)
-              .map((e) => (
-              <div
-                key={e.id}
-                className="flex items-center justify-between rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-4 py-2.5"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ background: e.tag?.color }}
-                  />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{e.tag?.name}</div>
-                    <div className="text-xs text-gray-400">
-                      {new Date(e.startTime).toLocaleString('zh-CN', { hour12: false })}
-                      {e.endTime ? ` → ${new Date(e.endTime).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}
-                    </div>
-                    {e.note && (
-                      <div className="text-xs text-gray-400 truncate mt-0.5">📝 {e.note}</div>
-                    )}
+        </div>
+        <div className="space-y-2">
+          {recent
+            .filter((e) => {
+              // 分类筛选
+              if (filterCat && !(filterCat === 'none' ? !e.tag?.categoryId : e.tag?.categoryId === filterCat)) return false
+              // 搜索筛选：匹配标签名或备注
+              if (searchQuery) {
+                const q = searchQuery.toLowerCase()
+                const tagName = e.tag?.name?.toLowerCase() ?? ''
+                const note = e.note?.toLowerCase() ?? ''
+                if (!tagName.includes(q) && !note.includes(q)) return false
+              }
+              return true
+            })
+            .map((e) => (
+            <div
+              key={e.id}
+              className="flex items-center justify-between rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-4 py-2.5"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span
+                  className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                  style={{ background: e.tag?.color }}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{e.tag?.name}</div>
+                  <div className="text-xs text-gray-400">
+                    {new Date(e.startTime).toLocaleString('zh-CN', { hour12: false })}
+                    {e.endTime ? ` → ${new Date(e.endTime).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}
                   </div>
-                </div>
-                <div className="flex items-center gap-3 flex-shrink-0">
-                  <span className="text-sm font-mono text-gray-500">
-                    {e.endTime ? formatDuration(new Date(e.endTime).getTime() - new Date(e.startTime).getTime()) : '进行中'}
-                  </span>
-                  <button
-                    onClick={() => setEditingEntry(e)}
-                    className="text-gray-300 hover:text-brand text-sm"
-                    title="编辑"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={async () => {
-                      await api.timer.remove(e.id)
-                      await loadRecent()
-                    }}
-                    className="text-gray-300 hover:text-red-500 text-sm"
-                    title="删除"
-                  >
-                    ✕
-                  </button>
+                  {e.note && (
+                    <div className="text-xs text-gray-400 truncate mt-0.5">📝 {e.note}</div>
+                  )}
                 </div>
               </div>
-            ))}
-          </div>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <span className="text-sm font-mono text-gray-500">
+                  {e.endTime ? formatDuration(new Date(e.endTime).getTime() - new Date(e.startTime).getTime()) : '进行中'}
+                </span>
+                <button
+                  onClick={() => setMemoTargetEntry(e)}
+                  className="text-gray-300 hover:text-brand text-sm"
+                  title="添加记事/日记"
+                >
+                  📝
+                </button>
+                <button
+                  onClick={() => setEditingEntry(e)}
+                  className="text-gray-300 hover:text-brand text-sm"
+                  title="编辑"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={async () => {
+                    await api.timer.remove(e.id)
+                    await loadRecent()
+                  }}
+                  className="text-gray-300 hover:text-red-500 text-sm"
+                  title="删除"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+          {/* 空状态提示（仅在有标签时显示，避免首次使用时空白） */}
+          {tags.length > 0 && recent.length === 0 && (
+            <div className="text-center py-6 text-gray-400 text-sm">
+              {dateRange === 'custom' && !customFrom && !customTo
+                ? '请选择日期区间'
+                : '该时间段暂无记录'}
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* 记事/日记弹窗 */}
+      {memoTargetEntry && (
+        <MemoCreateModal
+          entry={memoTargetEntry}
+          onClose={() => setMemoTargetEntry(null)}
+          onSaved={async () => {
+            setMemoTargetEntry(null)
+            await loadRecent()
+          }}
+        />
       )}
 
       {/* 补录弹窗 */}
@@ -289,11 +410,12 @@ export default function TimerPage() {
 }
 
 // 进行中计时卡片（含备注编辑）
-function RunningTimer({ entry, elapsed, stopping, onStop }: {
+function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo }: {
   entry: TimeEntry
   elapsed: number
   stopping: boolean
   onStop: (note?: string) => void
+  onAddMemo: () => void
 }) {
   const [note, setNote] = useState(entry.note ?? '')
   const [noteSaved, setNoteSaved] = useState(false)
@@ -305,7 +427,7 @@ function RunningTimer({ entry, elapsed, stopping, onStop }: {
   }
 
   return (
-    <div className="rounded-2xl border-2 border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 p-6 text-center">
+    <div className="rounded-2xl border-2 border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 p-6 text-center relative">
       <div className="text-sm text-gray-500 dark:text-gray-400 mb-1">
         正在计时 · {entry.tag?.category?.name ?? '未分类'}
       </div>
@@ -318,12 +440,12 @@ function RunningTimer({ entry, elapsed, stopping, onStop }: {
       <div className="text-xs text-gray-400 mb-4">
         开始于 {new Date(entry.startTime).toLocaleTimeString('zh-CN')}
       </div>
-      {/* 备注编辑 */}
+      {/* 备注编辑 & 记事入口 */}
       <div className="flex gap-2 mb-4 max-w-sm mx-auto">
         <input
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="添加备注…"
+          placeholder="添加简单备注…"
           className="input !py-1.5 text-sm"
         />
         <button
@@ -333,13 +455,22 @@ function RunningTimer({ entry, elapsed, stopping, onStop }: {
           {noteSaved ? '✓ 已存' : '存备注'}
         </button>
       </div>
-      <button
-        onClick={() => onStop(note)}
-        disabled={stopping}
-        className="px-8 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold disabled:opacity-50 transition-colors"
-      >
-        {stopping ? '停止中…' : '⏹ 停止'}
-      </button>
+      <div className="flex justify-center items-center gap-3">
+        <button
+          type="button"
+          onClick={onAddMemo}
+          className="px-4 py-2.5 rounded-xl border border-brand-300 dark:border-brand-700 text-brand font-medium hover:bg-brand-100 dark:hover:bg-brand-900/40 text-sm transition-colors"
+        >
+          📝 记事 / 日记
+        </button>
+        <button
+          onClick={() => onStop(note)}
+          disabled={stopping}
+          className="px-8 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold disabled:opacity-50 transition-colors"
+        >
+          {stopping ? '停止中…' : '⏹ 停止'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -532,5 +663,265 @@ function FormActions({ onCancel, onSave, saveLabel }: { onCancel: () => void; on
         {saveLabel}
       </button>
     </div>
+  )
+}
+
+// 关联到计时的记事/日记弹窗
+export function MemoCreateModal({
+  entry,
+  onClose,
+  onSaved,
+}: {
+  entry: TimeEntry
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [content, setContent] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [attachments, setAttachments] = useState<{ filename: string; path: string; mimeType: string; size: number }[]>([])
+  const [error, setError] = useState('')
+  // 自定义时间：默认当前时间
+  const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  const [memoTime, setMemoTime] = useState(nowLocal)
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    setUploading(true)
+    setError('')
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        const res = await api.memos.upload(file)
+        setAttachments((prev) => [...prev, res])
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const save = async () => {
+    if (!content.trim() && attachments.length === 0) {
+      setError('请输入记事内容或上传文件')
+      return
+    }
+    setError('')
+    try {
+      await api.memos.create({
+        content: content.trim() || '（无文字附记）',
+        timeEntryId: entry.id,
+        tagId: entry.tagId,
+        createdAt: new Date(memoTime).toISOString(),
+        attachments,
+      })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <ModalShell title={`添加日记 / 随手记 · ${entry.tag?.name ?? ''}`} onClose={onClose}>
+      <div className="space-y-4">
+        {/* 自定义时间 */}
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">记事时间</label>
+          <input
+            type="datetime-local"
+            value={memoTime}
+            onChange={(e) => setMemoTime(e.target.value)}
+            className="input"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">感悟 / 记事内容</label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={4}
+            placeholder="写下当前计时时间段内的想法、收获或日志..."
+            className="input"
+            autoFocus
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">多媒体附件（图片 / 视频）</label>
+          <input
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-50 file:text-brand dark:file:bg-brand-900/40 dark:file:text-brand-300 hover:file:bg-brand-100"
+          />
+          {uploading && <div className="text-xs text-brand mt-1">文件上传中...</div>}
+        </div>
+
+        {/* 已上传文件预览列表 */}
+        {attachments.length > 0 && (
+          <div className="grid grid-cols-3 gap-2 pt-2">
+            {attachments.map((att, idx) => (
+              <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-20 flex items-center justify-center">
+                {att.mimeType.startsWith('image/') ? (
+                  <img src={att.path} alt={att.filename} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="text-center p-1">
+                    <span className="text-lg">🎬</span>
+                    <div className="text-[10px] truncate max-w-[80px]">{att.filename}</div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAttachments(attachments.filter((_, i) => i !== idx))}
+                  className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && <div className="text-sm text-red-500">{error}</div>}
+      </div>
+      <FormActions onCancel={onClose} onSave={save} saveLabel="保存记事" />
+    </ModalShell>
+  )
+}
+
+// 编辑记事弹窗
+export function MemoEditModal({
+  memo,
+  onClose,
+  onSaved,
+}: {
+  memo: Memo
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const toLocalInput = (d: string) => {
+    const date = new Date(d)
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  }
+
+  const [content, setContent] = useState(memo.content)
+  const [memoTime, setMemoTime] = useState(toLocalInput(memo.createdAt))
+  const [uploading, setUploading] = useState(false)
+  const [attachments, setAttachments] = useState(
+    (memo.attachments ?? []).map((a) => ({
+      filename: a.filename,
+      path: a.path,
+      mimeType: a.mimeType,
+      size: a.size,
+    }))
+  )
+  const [error, setError] = useState('')
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploading(true)
+    setError('')
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        const res = await api.memos.upload(file)
+        setAttachments((prev) => [...prev, res])
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const save = async () => {
+    if (!content.trim() && attachments.length === 0) {
+      setError('请输入记事内容或上传文件')
+      return
+    }
+    setError('')
+    try {
+      await api.memos.update(memo.id, {
+        content: content.trim() || '（无文字附记）',
+        createdAt: new Date(memoTime).toISOString(),
+        attachments,
+      })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <ModalShell title="编辑记事" onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">记事时间</label>
+          <input
+            type="datetime-local"
+            value={memoTime}
+            onChange={(e) => setMemoTime(e.target.value)}
+            className="input"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">感悟 / 记事内容</label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={4}
+            className="input"
+            autoFocus
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">多媒体附件（图片 / 视频）</label>
+          <input
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-50 file:text-brand dark:file:bg-brand-900/40 dark:file:text-brand-300 hover:file:bg-brand-100"
+          />
+          {uploading && <div className="text-xs text-brand mt-1">文件上传中...</div>}
+        </div>
+
+        {attachments.length > 0 && (
+          <div className="grid grid-cols-3 gap-2 pt-2">
+            {attachments.map((att, idx) => (
+              <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-20 flex items-center justify-center">
+                {att.mimeType.startsWith('image/') ? (
+                  <img src={att.path} alt={att.filename} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="text-center p-1">
+                    <span className="text-lg">🎬</span>
+                    <div className="text-[10px] truncate max-w-[80px]">{att.filename}</div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAttachments(attachments.filter((_, i) => i !== idx))}
+                  className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && <div className="text-sm text-red-500">{error}</div>}
+      </div>
+      <FormActions onCancel={onClose} onSave={save} saveLabel="保存修改" />
+    </ModalShell>
   )
 }

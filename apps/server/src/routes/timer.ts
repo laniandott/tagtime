@@ -83,9 +83,13 @@ export default async function timerRoutes(app: FastifyInstance) {
     const where: Record<string, unknown> = {}
     if (tagId) where.tagId = tagId
     if (from || to) {
-      where.startTime = {}
-      if (from) (where.startTime as { gte?: Date }).gte = new Date(from)
-      if (to) (where.startTime as { lte?: Date }).lte = new Date(to)
+      // 查询与 [from, to] 有重叠的记录：
+      // startTime <= to AND (endTime >= from OR endTime IS NULL)
+      // 这样跨午夜的计时也能被正确返回
+      const andCond: Record<string, unknown>[] = []
+      if (to) andCond.push({ startTime: { lte: new Date(to) } })
+      if (from) andCond.push({ OR: [{ endTime: { gte: new Date(from) } }, { endTime: null }] })
+      where.AND = andCond
     }
     return prisma.timeEntry.findMany({
       where,

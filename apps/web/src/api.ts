@@ -7,6 +7,7 @@ import type {
   DailyStat,
   TagStat,
   Goal,
+  Memo,
 } from './types'
 
 const BASE = '/api'
@@ -102,8 +103,6 @@ export const api = {
       const qs = q.toString()
       return req<TagStat[]>(`/stats/by-tag${qs ? `?${qs}` : ''}`)
     },
-    byCategory: (from?: string, to?: string) =>
-      req<TagStat[]>(`/stats/by-category${from ? `?from=${from}&to=${to ?? ''}` : ''}`),
   },
   goals: {
     list: () => req<Goal[]>('/goals'),
@@ -112,5 +111,42 @@ export const api = {
     update: (id: string, data: Partial<Goal>) =>
       req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     remove: (id: string) => req(`/goals/${id}`, { method: 'DELETE' }),
+  },
+  memos: {
+    list: (params?: { timeEntryId?: string; tagId?: string; days?: number; from?: string; to?: string }) => {
+      const q = new URLSearchParams()
+      if (params?.timeEntryId) q.set('timeEntryId', params.timeEntryId)
+      if (params?.tagId) q.set('tagId', params.tagId)
+      if (params?.days) q.set('days', String(params.days))
+      if (params?.from) q.set('from', params.from)
+      if (params?.to) q.set('to', params.to)
+      return req<Memo[]>(`/memos?${q}`)
+    },
+    create: (data: {
+      content: string
+      timeEntryId?: string
+      tagId?: string
+      createdAt?: string
+      attachments?: { filename: string; path: string; mimeType: string; size: number }[]
+    }) => req<Memo>('/memos', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: {
+      content?: string
+      createdAt?: string
+      attachments?: { filename: string; path: string; mimeType: string; size: number }[]
+    }) => req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    upload: async (file: File) => {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch('/api/memos/upload', {
+        method: 'POST',
+        body: form,
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: '上传失败' }))
+        throw new Error(err.error ?? '上传文件失败')
+      }
+      return res.json() as Promise<{ filename: string; path: string; mimeType: string; size: number }>
+    },
+    remove: (id: string) => req(`/memos/${id}`, { method: 'DELETE' }),
   },
 }

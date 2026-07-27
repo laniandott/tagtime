@@ -20,6 +20,28 @@ export interface Tag {
   category?: Category | null
 }
 
+export interface Attachment {
+  id: string
+  memoId: string
+  filename: string
+  path: string
+  mimeType: string
+  size: number
+  createdAt: string
+}
+
+export interface Memo {
+  id: string
+  content: string
+  timeEntryId: string | null
+  tagId: string | null
+  createdAt: string
+  updatedAt: string
+  attachments?: Attachment[]
+  tag?: Tag | null
+  timeEntry?: TimeEntry | null
+}
+
 export interface TimeEntry {
   id: string
   startTime: string
@@ -29,6 +51,7 @@ export interface TimeEntry {
   todoId: string | null
   tag?: Tag | null
   todo?: Todo | null
+  memos?: Memo[]
 }
 
 export interface Todo {

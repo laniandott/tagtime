@@ -14,7 +14,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-10 backdrop-blur bg-white/80 dark:bg-gray-950/80 border-b border-gray-200 dark:border-gray-800">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2 font-semibold text-brand">
-            <span className="text-xl">🏷</span>
+            <img src="/favicon.png" alt="TagTime" className="w-7 h-7 rounded" />
             <span>TagTime</span>
           </div>
           <nav className="flex gap-1">

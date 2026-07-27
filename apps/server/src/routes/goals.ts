@@ -44,7 +44,7 @@ export default async function goalRoutes(app: FastifyInstance) {
     // 计算每个目标的当前周期进度
     const now = new Date()
     const result = await Promise.all(
-      goals.map(async (goal) => {
+      goals.map(async (goal: Record<string, any>) => {
         const start = periodStart(goal.period, goal.periodDays)
         const entries = await prisma.timeEntry.findMany({
           where: { tagId: goal.tagId, startTime: { gte: start, lte: now } },
@@ -56,7 +56,7 @@ export default async function goalRoutes(app: FastifyInstance) {
           current = entries.length
         } else {
           // 时长型：统计总分钟数
-          const totalMs = entries.reduce((s, e) => s + durationMs(e.startTime, e.endTime), 0)
+          const totalMs = entries.reduce((s: number, e: { startTime: Date; endTime: Date | null }) => s + durationMs(e.startTime, e.endTime), 0)
           current = Math.floor(totalMs / 60000)
         }
 
