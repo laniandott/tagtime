@@ -15,6 +15,8 @@ interface AppState {
   start: (tagId: string, note?: string, todoId?: string) => Promise<void>
   stop: (id: string, note?: string) => Promise<void>
   stopAll: () => Promise<void>
+  // 次数型打卡
+  quickCount: (tagId: string, note?: string, todoId?: string) => Promise<void>
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -58,6 +60,12 @@ export const useStore = create<AppState>((set, get) => ({
   stopAll: async () => {
     await api.timer.stopAll()
     set({ running: [] })
+    await get().loadAll()
+  },
+
+  quickCount: async (tagId, note, todoId) => {
+    await api.timer.quick({ tagId, note, todoId })
+    // 次数型打卡不需要加入 running，但需要刷新数据
     await get().loadAll()
   },
 }))

@@ -1,6 +1,7 @@
 // TagTime - Tag-based time tracker
 // 数据模型：Category(分类) -> Tag(标签) -> TimeEntry(时间记录)
 //          Todo(待办) 可选关联 Category 和 TimeEntry
+//          Goal(目标) 关联 Tag，支持时长型/次数型习惯追踪
 
 generator client {
   provider   = "prisma-client-js"
@@ -27,18 +28,21 @@ model Category {
 }
 
 /// 标签：归属某个分类，如 日常/吃饭、工作/编码
+/// trackType: "time"=时长计时（默认），"count"=次数打卡
 model Tag {
   id         String   @id @default(cuid())
   name       String
   color      String   @default("#6d5efc")
   icon       String?
   categoryId String?
+  trackType  String   @default("time") // time | count
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   timeEntries TimeEntry[]
+  goals      Goal[]
 
   @@unique([name, categoryId])
 }
@@ -79,4 +83,26 @@ model Todo {
 
   @@index([status])
   @@index([categoryId])
+}
+
+/// 目标（习惯养成）：关联标签，支持时长型或次数型
+/// type: "time"=时长目标(分钟)，"count"=次数目标
+/// period: "daily"=每日，"weekly"=每周，"monthly"=每月
+/// periodDays: 自定义周期天数（当 period="custom" 时使用）
+model Goal {
+  id          String   @id @default(cuid())
+  tagId       String
+  title       String
+  type        String   @default("count") // time | count
+  target      Int      @default(1)        // 目标值（次数 或 分钟数）
+  period      String   @default("daily")  // daily | weekly | monthly | custom
+  periodDays  Int?                         // 自定义周期天数
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tag         Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@index([tagId])
+  @@index([active])
 }

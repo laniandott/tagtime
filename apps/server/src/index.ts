@@ -10,6 +10,7 @@ import tagRoutes from './routes/tags.js'
 import timerRoutes from './routes/timer.js'
 import todoRoutes from './routes/todos.js'
 import statsRoutes from './routes/stats.js'
+import goalRoutes from './routes/goals.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -23,6 +24,7 @@ await app.register(tagRoutes, { prefix: '/api/tags' })
 await app.register(timerRoutes, { prefix: '/api/timer' })
 await app.register(todoRoutes, { prefix: '/api/todos' })
 await app.register(statsRoutes, { prefix: '/api/stats' })
+await app.register(goalRoutes, { prefix: '/api/goals' })
 
 // Serve built frontend (production)
 const webDist = join(__dirname, '..', '..', 'web', 'dist')

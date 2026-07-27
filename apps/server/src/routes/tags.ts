@@ -12,16 +12,17 @@ export default async function tagRoutes(app: FastifyInstance) {
 
   // 创建标签
   app.post('/', async (req, reply) => {
-    const { name, color, icon, categoryId, sortOrder } = req.body as {
+    const { name, color, icon, categoryId, sortOrder, trackType } = req.body as {
       name: string
       color?: string
       icon?: string
       categoryId?: string
       sortOrder?: number
+      trackType?: string
     }
     try {
       return await prisma.tag.create({
-        data: { name, color, icon, categoryId: categoryId || null, sortOrder },
+        data: { name, color, icon, categoryId: categoryId || null, sortOrder, trackType: trackType ?? 'time' },
         include: { category: true },
       })
     } catch (e) {
@@ -33,17 +34,18 @@ export default async function tagRoutes(app: FastifyInstance) {
   // 更新标签
   app.put('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { name, color, icon, categoryId, sortOrder } = req.body as {
+    const { name, color, icon, categoryId, sortOrder, trackType } = req.body as {
       name?: string
       color?: string
       icon?: string
       categoryId?: string | null
       sortOrder?: number
+      trackType?: string
     }
     try {
       return await prisma.tag.update({
         where: { id },
-        data: { name, color, icon, categoryId, sortOrder },
+        data: { name, color, icon, categoryId, sortOrder, trackType },
         include: { category: true },
       })
     } catch (e) {

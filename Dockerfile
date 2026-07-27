@@ -15,7 +15,8 @@ RUN npm config set registry https://registry.npmmirror.com && \
 # 复制源码
 COPY . .
 
-# 生成 Prisma WASM client（无需下载平台原生二进制文件）
+# 生成 Prisma WASM client（使用镜像源加速引擎下载）
+ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
 RUN cd apps/server && npx prisma generate
 
 # 构建后端 + 前端

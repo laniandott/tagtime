@@ -5,7 +5,7 @@ import type { TimeEntry, Tag } from '../types'
 import { formatDuration } from '../store'
 
 export default function TimerPage() {
-  const { tags, categories, running, clockOffset, start, stop, stopAll } = useStore()
+  const { tags, categories, running, clockOffset, start, stop, stopAll, quickCount } = useStore()
   const [now, setNow] = useState(Date.now())
   const [recent, setRecent] = useState<TimeEntry[]>([])
   const [stoppingId, setStoppingId] = useState<string | null>(null)
@@ -37,8 +37,16 @@ export default function TimerPage() {
     (now - clockOffset) - new Date(entry.startTime).getTime()
 
   const handleStart = async (tagId: string) => {
+    const tag = tags.find((t) => t.id === tagId)
     try {
-      await start(tagId)
+      if (tag?.trackType === 'count') {
+        // 次数型：点击即打卡
+        await quickCount(tagId)
+        await loadRecent()
+      } else {
+        // 时长型：开始计时
+        await start(tagId)
+      }
     } catch (e) {
       alert((e as Error).message)
     }
@@ -146,10 +154,11 @@ export default function TimerPage() {
                       <button
                         key={tag.id}
                         onClick={() => handleStart(tag.id)}
-                      className="px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105"
+                      className={`px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105 ${tag.trackType === 'count' ? 'border-dashed' : ''}`}
                       style={{ borderColor: tag.color, color: tag.color }}
                       >
                         {tag.icon ? `${tag.icon} ` : ''}{tag.name}
+                        {tag.trackType === 'count' && <span className="ml-1 text-xs opacity-60">✓</span>}
                       </button>
                     ))}
                   </div>
@@ -164,10 +173,11 @@ export default function TimerPage() {
                     <button
                       key={tag.id}
                       onClick={() => handleStart(tag.id)}
-                      className="px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105"
+                      className={`px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105 ${tag.trackType === 'count' ? 'border-dashed' : ''}`}
                       style={{ borderColor: tag.color, color: tag.color }}
                     >
                       {tag.icon ? `${tag.icon} ` : ''}{tag.name}
+                      {tag.trackType === 'count' && <span className="ml-1 text-xs opacity-60">✓</span>}
                     </button>
                   ))}
                 </div>

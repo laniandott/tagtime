@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore, formatDuration } from '../store'
-import type { Summary, DailyStat, TagStat } from '../types'
+import type { Summary, DailyStat, TagStat, Goal } from '../types'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -14,11 +14,17 @@ export default function StatsPage() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [daily, setDaily] = useState<DailyStat[]>([])
   const [byTag, setByTag] = useState<TagStat[]>([])
+  const [goals, setGoals] = useState<Goal[]>([])
   // 时间范围：预设天数 或 'custom' 自定义区间
   const [range, setRange] = useState<7 | 14 | 30 | 'custom'>(7)
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [filterCat, setFilterCat] = useState('')
+
+  // 加载目标进度
+  useEffect(() => {
+    api.goals.list().then(setGoals).catch(() => {})
+  }, [filterCat])
 
   useEffect(() => {
     api.stats.summary(filterCat || undefined).then(setSummary).catch(() => {})
@@ -81,6 +87,50 @@ export default function StatsPage() {
         <MetricCard label="本周" value={summary ? formatDuration(summary.week) : '…'} />
         <MetricCard label="本月" value={summary ? formatDuration(summary.month) : '…'} />
       </div>
+
+      {/* 目标进度 */}
+      {goals.length > 0 && (
+        <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
+          <h2 className="text-sm font-semibold text-gray-500 mb-3">目标进度</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {goals.map((goal) => {
+              const current = goal.current ?? 0
+              const target = goal.target
+              const done = current >= target
+              const percent = Math.min(100, Math.round((current / target) * 100))
+              return (
+                <div key={goal.id} className="flex items-center gap-3 rounded-lg border border-gray-100 dark:border-gray-800 p-3">
+                  {/* 进度环 */}
+                  <div className="relative w-12 h-12 flex-shrink-0">
+                    <svg className="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
+                      <circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" strokeWidth="4" className="text-gray-100 dark:text-gray-800" />
+                      <circle
+                        cx="24" cy="24" r="20" fill="none" stroke={goal.tag?.color ?? '#6d5efc'} strokeWidth="4"
+                        strokeDasharray={`${(percent / 100) * 125.6} 125.6`}
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center text-xs font-bold" style={{ color: goal.tag?.color ?? '#6d5efc' }}>
+                      {done ? '✓' : `${percent}%`}
+                    </div>
+                  </div>
+                  {/* 信息 */}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">{goal.title}</div>
+                    <div className="text-xs text-gray-400">
+                      {current}{goal.type === 'count' ? '次' : '分'} / {target}{goal.type === 'count' ? '次' : '分'}
+                    </div>
+                    <div className="text-xs" style={{ color: done ? '#10b981' : '#9ca3af' }}>
+                      {goal.period === 'daily' ? '今日' : goal.period === 'weekly' ? '本周' : goal.period === 'monthly' ? '本月' : `近${goal.periodDays}天`}
+                      {done && ' · 已达成'}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 时间范围选择 */}
       <div className="flex items-center gap-2 flex-wrap">

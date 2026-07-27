@@ -6,6 +6,7 @@ import type {
   Summary,
   DailyStat,
   TagStat,
+  Goal,
 } from './types'
 
 const BASE = '/api'
@@ -52,6 +53,8 @@ export const api = {
     stop: (id: string, note?: string) =>
       req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note }) }),
     stopAll: () => req<{ count: number }>('/timer/stop', { method: 'POST' }),
+    quick: (data: { tagId: string; note?: string; todoId?: string }) =>
+      req<TimeEntry & { serverTime: string }>('/timer/quick', { method: 'POST', body: JSON.stringify(data) }),
     list: (params?: { from?: string; to?: string; tagId?: string }) => {
       const q = new URLSearchParams()
       if (params?.from) q.set('from', params.from)
@@ -101,5 +104,13 @@ export const api = {
     },
     byCategory: (from?: string, to?: string) =>
       req<TagStat[]>(`/stats/by-category${from ? `?from=${from}&to=${to ?? ''}` : ''}`),
+  },
+  goals: {
+    list: () => req<Goal[]>('/goals'),
+    create: (data: { tagId: string; title: string; type?: string; target?: number; period?: string; periodDays?: number | null }) =>
+      req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<Goal>) =>
+      req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id: string) => req(`/goals/${id}`, { method: 'DELETE' }),
   },
 }

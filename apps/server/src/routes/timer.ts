@@ -2,6 +2,27 @@ import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
 
 export default async function timerRoutes(app: FastifyInstance) {
+  // 次数型标签：点击即完成一条记录（startTime = endTime）
+  app.post('/quick', async (req) => {
+    const { tagId, note, todoId } = req.body as {
+      tagId: string
+      note?: string
+      todoId?: string
+    }
+    const now = new Date()
+    const entry = await prisma.timeEntry.create({
+      data: {
+        tagId,
+        note,
+        todoId: todoId || null,
+        startTime: now,
+        endTime: now,
+      },
+      include: { tag: { include: { category: true } } },
+    })
+    return { ...entry, serverTime: now.toISOString() }
+  })
+
   // 开始计时：传入 tagId，可选 note、todoId
   // 支持同步计时——不会自动结束其他进行中的计时
   app.post('/start', async (req) => {

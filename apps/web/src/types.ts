@@ -15,6 +15,7 @@ export interface Tag {
   color: string
   icon: string | null
   categoryId: string | null
+  trackType: 'time' | 'count'
   sortOrder: number
   category?: Category | null
 }
@@ -61,4 +62,22 @@ export interface TagStat {
   color: string
   category: string | null
   ms: number
+}
+
+export interface Goal {
+  id: string
+  tagId: string
+  title: string
+  type: 'time' | 'count'
+  target: number
+  period: 'daily' | 'weekly' | 'monthly' | 'custom'
+  periodDays: number | null
+  active: boolean
+  createdAt: string
+  updatedAt: string
+  // 以下为 /goals 接口返回的进度字段
+  tag?: Tag | null
+  current?: number
+  periodStart?: string
+  percent?: number
 }
