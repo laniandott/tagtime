@@ -14,7 +14,10 @@ export default function StatsPage() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [daily, setDaily] = useState<DailyStat[]>([])
   const [byTag, setByTag] = useState<TagStat[]>([])
-  const [range, setRange] = useState<7 | 14 | 30>(7)
+  // 时间范围：预设天数 或 'custom' 自定义区间
+  const [range, setRange] = useState<7 | 14 | 30 | 'custom'>(7)
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [filterCat, setFilterCat] = useState('')
 
   useEffect(() => {
@@ -22,12 +25,22 @@ export default function StatsPage() {
   }, [filterCat])
 
   useEffect(() => {
-    api.stats.daily(range, filterCat || undefined).then(setDaily).catch(() => {})
-    const now = new Date()
-    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    from.setDate(from.getDate() - (range - 1))
-    api.stats.byTag(from.toISOString(), now.toISOString(), filterCat || undefined).then(setByTag).catch(() => {})
-  }, [range, filterCat])
+    if (range === 'custom') {
+      // 自定义区间：需要同时有起止日期才查询
+      if (!customFrom || !customTo) return
+      const fromIso = new Date(customFrom + 'T00:00:00').toISOString()
+      const toIso = new Date(customTo + 'T23:59:59').toISOString()
+      api.stats.daily({ from: fromIso, to: toIso, categoryId: filterCat || undefined }).then(setDaily).catch(() => {})
+      api.stats.byTag(fromIso, toIso, filterCat || undefined).then(setByTag).catch(() => {})
+    } else {
+      // 预设天数
+      api.stats.daily({ days: range, categoryId: filterCat || undefined }).then(setDaily).catch(() => {})
+      const now = new Date()
+      const from = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      from.setDate(from.getDate() - (range - 1))
+      api.stats.byTag(from.toISOString(), now.toISOString(), filterCat || undefined).then(setByTag).catch(() => {})
+    }
+  }, [range, filterCat, customFrom, customTo])
 
   // 每日趋势数据
   const trendData = daily.map((d) => ({
@@ -70,7 +83,7 @@ export default function StatsPage() {
       </div>
 
       {/* 时间范围选择 */}
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {([7, 14, 30] as const).map((r) => (
           <button
             key={r}
@@ -80,12 +93,37 @@ export default function StatsPage() {
             {r} 天
           </button>
         ))}
+        <button
+          onClick={() => setRange('custom')}
+          className={`px-3 py-1 rounded-full text-sm ${range === 'custom' ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+        >
+          自定义
+        </button>
+        {range === 'custom' && (
+          <div className="flex items-center gap-2 ml-1">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              max={customTo || undefined}
+              className="text-sm border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+            />
+            <span className="text-gray-400 text-sm">至</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              min={customFrom || undefined}
+              className="text-sm border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+            />
+          </div>
+        )}
       </div>
 
       {/* 每日趋势柱状图 */}
       <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
         <h2 className="text-sm font-semibold text-gray-500 mb-3">
-          每日时长趋势（小时）{filterLabel && <span className="text-gray-400 ml-1">· {filterLabel}</span>}
+          每日时长趋势（小时）{range === 'custom' && customFrom && customTo ? `· ${customFrom} ~ ${customTo}` : filterLabel && <span className="text-gray-400 ml-1">· {filterLabel}</span>}
         </h2>
         {trendData.length === 0 ? (
           <Empty />
@@ -132,7 +170,7 @@ export default function StatsPage() {
       {/* 标签排行 */}
       <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
         <h2 className="text-sm font-semibold text-gray-500 mb-3">
-          标签时长排行（近 {range} 天）{filterLabel && <span className="text-gray-400 ml-1">· {filterLabel}</span>}
+          标签时长排行（{range === 'custom' ? `${customFrom || '?'} ~ ${customTo || '?'}` : `近 ${range} 天`}{filterLabel && <span className="text-gray-400 ml-1">· {filterLabel}</span>}）
         </h2>
         {byTag.length === 0 ? (
           <Empty />

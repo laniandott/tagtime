@@ -70,22 +70,43 @@ export default async function statsRoutes(app: FastifyInstance) {
     }
   })
 
-  // 每日趋势：最近 N 天每日总时长 + 按分类分布
+  // 每日趋势：支持自定义日期范围（from/to）或最近 N 天（days）
   app.get('/daily', async (req) => {
-    const { days: daysStr, categoryId } = req.query as { days?: string; categoryId?: string }
-    const days = Number(daysStr ?? 7)
+    const { days: daysStr, categoryId, from, to } = req.query as {
+      days?: string
+      categoryId?: string
+      from?: string
+      to?: string
+    }
     const cf = categoryFilter(categoryId)
     const now = new Date()
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    start.setDate(start.getDate() - (days - 1))
+    let start: Date
+    let end: Date
+    let totalDays: number
+
+    if (from) {
+      // 自定义日期范围
+      start = new Date(from)
+      start.setHours(0, 0, 0, 0)
+      end = to ? new Date(to) : new Date(now)
+      end.setHours(23, 59, 59, 999)
+      // 计算天数（含首尾）
+      totalDays = Math.ceil((end.getTime() - start.getTime()) / (24 * 3600 * 1000)) + 1
+    } else {
+      // 默认：最近 N 天
+      totalDays = Number(daysStr ?? 7)
+      start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      start.setDate(start.getDate() - (totalDays - 1))
+      end = now
+    }
 
     const entries = await prisma.timeEntry.findMany({
-      where: { startTime: { gte: start }, ...cf },
+      where: { startTime: { gte: start, lte: end }, ...cf },
       include: { tag: { include: { category: true } } },
     })
 
     const buckets = new Map<string, { date: string; total: number; byCategory: Map<string, { name: string; color: string; ms: number }> }>()
-    for (let i = 0; i < days; i++) {
+    for (let i = 0; i < totalDays; i++) {
       const d = new Date(start)
       d.setDate(d.getDate() + i)
       buckets.set(dayKey(d), { date: dayKey(d), total: 0, byCategory: new Map() })

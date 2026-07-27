@@ -83,10 +83,12 @@ export const api = {
   stats: {
     summary: (categoryId?: string) =>
       req<Summary>(`/stats/summary${categoryId ? `?categoryId=${categoryId}` : ''}`),
-    daily: (days = 7, categoryId?: string) => {
+    daily: (params: { days?: number; from?: string; to?: string; categoryId?: string } = {}) => {
       const q = new URLSearchParams()
-      q.set('days', String(days))
-      if (categoryId) q.set('categoryId', categoryId)
+      if (params.days) q.set('days', String(params.days))
+      if (params.from) q.set('from', params.from)
+      if (params.to) q.set('to', params.to)
+      if (params.categoryId) q.set('categoryId', params.categoryId)
       return req<DailyStat[]>(`/stats/daily?${q}`)
     },
     byTag: (from?: string, to?: string, categoryId?: string) => {
