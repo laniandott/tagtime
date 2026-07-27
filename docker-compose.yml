@@ -1,0 +1,16 @@
+services:
+  tagtime:
+    build: .
+    image: tagtime:latest
+    container_name: tagtime
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATABASE_URL=file:/data/tagtime.db
+      - HOST=0.0.0.0
+      - PORT=3000
+      - TZ=Asia/Shanghai
+      - PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1

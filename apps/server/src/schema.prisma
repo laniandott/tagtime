@@ -1,0 +1,82 @@
+// TagTime - Tag-based time tracker
+// 数据模型：Category(分类) -> Tag(标签) -> TimeEntry(时间记录)
+//          Todo(待办) 可选关联 Category 和 TimeEntry
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "wasm"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// 标签分类：用户自定义的大类，如 日常/工作/宝宝
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#6d5efc")
+  icon      String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags  Tag[]
+  todos Todo[]
+}
+
+/// 标签：归属某个分类，如 日常/吃饭、工作/编码
+model Tag {
+  id         String   @id @default(cuid())
+  name       String
+  color      String   @default("#6d5efc")
+  icon       String?
+  categoryId String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  timeEntries TimeEntry[]
+
+  @@unique([name, categoryId])
+}
+
+/// 时间记录：一次计时的开始与结束。endTime 为 null 表示进行中
+model TimeEntry {
+  id        String    @id @default(cuid())
+  startTime DateTime  @default(now())
+  endTime   DateTime?
+  note      String?
+  tagId     String
+  todoId    String?
+
+  tag       Tag   @relation(fields: [tagId], references: [id], onDelete: Restrict)
+  todo      Todo? @relation(fields: [todoId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([tagId])
+  @@index([startTime])
+  @@index([todoId])
+}
+
+/// 待办事项：可关联分类，可关联时间记录
+model Todo {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  status      String   @default("pending") // pending | done
+  priority    Int      @default(0)          // 0=普通 1=重要 2=紧急
+  dueDate     DateTime?
+  categoryId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category    Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  timeEntries TimeEntry[]
+
+  @@index([status])
+  @@index([categoryId])
+}
