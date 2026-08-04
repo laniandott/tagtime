@@ -19,6 +19,66 @@ interface AppState {
   quickCount: (tagId: string, note?: string, todoId?: string) => Promise<void>
 }
 
+let notificationListenerRegistered = false
+
+// 安卓原生通知栏同步（仅在 Capacitor 原生 App 环境下按需动态加载并执行）
+async function syncNativeNotification(running: TimeEntry[]) {
+  try {
+    const isCapacitor = typeof window !== 'undefined' && Boolean((window as any).Capacitor?.isNativePlatform?.())
+    if (!isCapacitor) return
+
+    const { LocalNotifications } = await import('@capacitor/local-notifications')
+
+    // 注册点击通知事件监听，确保点击通知切回 App 时重新保持常驻通知栏
+    if (!notificationListenerRegistered) {
+      notificationListenerRegistered = true
+      LocalNotifications.addListener('localNotificationActionPerformed', async () => {
+        const currentRunning = useStore.getState().running
+        if (currentRunning.length > 0) {
+          syncNativeNotification(currentRunning)
+        }
+      }).catch(() => {})
+    }
+
+    const perm = await LocalNotifications.checkPermissions()
+    if (perm.display !== 'granted') {
+      await LocalNotifications.requestPermissions()
+    }
+
+    if (running.length > 0) {
+      const active = running[0]
+      const tagName = active.tag?.name ? `${active.tag.icon ? active.tag.icon + ' ' : ''}${active.tag.name}` : '活动'
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: 1001,
+            title: `⏱ 正在计时 · ${tagName}`,
+            body: `开始于 ${new Date(active.startTime).toLocaleTimeString('zh-CN', { hour12: false })} · 点击切回 TagTime`,
+            ongoing: true,
+            autoCancel: false,
+          },
+        ],
+      })
+    } else {
+      await LocalNotifications.cancel({ notifications: [{ id: 1001 }] })
+    }
+  } catch (e) {
+    console.warn('Native notification sync warn:', e)
+  }
+}
+
+// 页面重新获得焦点（如从通知栏切回 App）时自动刷新计时与常驻通知
+if (typeof window !== 'undefined') {
+  window.addEventListener('focus', () => {
+    useStore.getState().loadRunning()
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      useStore.getState().loadRunning()
+    }
+  })
+}
+
 export const useStore = create<AppState>((set, get) => ({
   categories: [],
   tags: [],
@@ -35,37 +95,42 @@ export const useStore = create<AppState>((set, get) => ({
     ])
     const clockOffset = Date.now() - new Date(timerData.serverTime).getTime()
     set({ categories, tags, running: timerData.running, clockOffset, loading: false })
+    syncNativeNotification(timerData.running)
   },
 
   loadRunning: async () => {
     const timerData = await api.timer.current()
     const clockOffset = Date.now() - new Date(timerData.serverTime).getTime()
     set({ running: timerData.running, clockOffset })
+    syncNativeNotification(timerData.running)
   },
 
   start: async (tagId, note, todoId) => {
     const res = await api.timer.start({ tagId, note, todoId })
     const { serverTime, ...entry } = res
     const clockOffset = Date.now() - new Date(serverTime).getTime()
-    set({ running: [...get().running, entry], clockOffset })
+    const newRunning = [...get().running, entry]
+    set({ running: newRunning, clockOffset })
+    syncNativeNotification(newRunning)
   },
 
   stop: async (id, note) => {
     await api.timer.stop(id, note)
-    set({ running: get().running.filter((e) => e.id !== id) })
-    // 刷新数据
+    const newRunning = get().running.filter((e) => e.id !== id)
+    set({ running: newRunning })
+    syncNativeNotification(newRunning)
     await get().loadAll()
   },
 
   stopAll: async () => {
     await api.timer.stopAll()
     set({ running: [] })
+    syncNativeNotification([])
     await get().loadAll()
   },
 
   quickCount: async (tagId, note, todoId) => {
     await api.timer.quick({ tagId, note, todoId })
-    // 次数型打卡不需要加入 running，但需要刷新数据
     await get().loadAll()
   },
 }))

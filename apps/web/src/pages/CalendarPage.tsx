@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { api } from '../api'
+import { api, resolveUploadUrl } from '../api'
 import { formatDuration } from '../store'
 import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
@@ -848,11 +848,11 @@ function TimelineSection() {
                         <button
                           key={img.id}
                           type="button"
-                          onClick={() => setPreviewImage(img.path)}
+                          onClick={() => setPreviewImage(resolveUploadUrl(img.path))}
                           className="rounded-lg overflow-hidden border border-gray-100 dark:border-gray-800 bg-gray-100 dark:bg-gray-800 aspect-square group/img relative"
                         >
                           <img
-                            src={img.path}
+                            src={resolveUploadUrl(img.path)}
                             alt={img.filename}
                             className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
                           />

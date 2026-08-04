@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { api } from '../api'
+import { api, getServerHost, setServerHost } from '../api'
 import type { Category, Tag, Goal } from '../types'
 
 const COLORS = ['#6d5efc', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#64748b']
@@ -191,6 +191,9 @@ export default function TagsPage() {
           </div>
         </section>
       )}
+
+      {/* 系统设置与缓存清理 */}
+      <SystemSettingsSection />
 
       {/* 分类表单弹层 */}
       {showCatForm && (
@@ -480,3 +483,143 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
     </Modal>
   )
 }
+
+function SystemSettingsSection() {
+  const [serverUrl, setServerUrlState] = useState(() => getServerHost() || 'http://812264226.xyz:3000')
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success?: boolean; message?: string } | null>(null)
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null)
+
+  const handleTestConnection = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const target = serverUrl.trim().replace(/\/$/, '')
+      const res = await fetch(`${target}/api/categories`)
+      if (res.ok) {
+        setTestResult({ success: true, message: '连接成功！服务器通信正常' })
+      } else {
+        setTestResult({ success: false, message: `连接异常 HTTP ${res.status}` })
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: e.message || '网络无法连接，请检查服务器地址' })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSaveServerUrl = () => {
+    setServerHost(serverUrl)
+    setTestResult({ success: true, message: '服务器地址设置已保存并生效！' })
+    setTimeout(() => {
+      window.location.reload()
+    }, 800)
+  }
+
+  const handleClearCache = async () => {
+    if (!confirm('确定要清理本地缓存吗？这不会影响服务器上的任何数据。')) return
+
+    try {
+      const savedServerUrl = localStorage.getItem('tagtime_server_url')
+      localStorage.clear()
+      sessionStorage.clear()
+
+      if (savedServerUrl) {
+        localStorage.setItem('tagtime_server_url', savedServerUrl)
+      }
+
+      if ('caches' in window) {
+        const keys = await caches.keys()
+        await Promise.all(keys.map((k) => caches.delete(k)))
+      }
+
+      setCacheMessage('✅ 已成功清理所有本地数据缓存与临时文件！')
+      setTimeout(() => {
+        setCacheMessage(null)
+        window.location.reload()
+      }, 1200)
+    } catch (e: any) {
+      setCacheMessage(`清理缓存提示: ${e.message}`)
+    }
+  }
+
+  return (
+    <section className="space-y-3 pt-4 border-t border-gray-200 dark:border-gray-800">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">⚙️ 系统设置与数据缓存</h2>
+      </div>
+
+      <div className="rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4 space-y-4 shadow-sm">
+        {/* 服务器地址设置 */}
+        <div className="space-y-2">
+          <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">
+            🌐 后端服务器地址 (手机 App 与云端同步)
+          </label>
+          <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+            <input
+              type="text"
+              value={serverUrl}
+              onChange={(e) => setServerUrlState(e.target.value)}
+              placeholder="例如: http://812264226.xyz:3000"
+              className="input flex-1 text-xs font-mono"
+            />
+            <button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={testing}
+              className="px-3 py-2 text-xs rounded-xl border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap"
+            >
+              {testing ? '测试中…' : '🔍 测试连接'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveServerUrl}
+              className="px-4 py-2 text-xs rounded-xl bg-brand text-white font-medium hover:bg-brand-600 transition-colors whitespace-nowrap"
+            >
+              保存生效
+            </button>
+          </div>
+          {testResult && (
+            <div
+              className={`text-xs p-2.5 rounded-lg border ${
+                testResult.success
+                  ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/30 dark:border-green-800 dark:text-green-300'
+                  : 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300'
+              }`}
+            >
+              {testResult.message}
+            </div>
+          )}
+        </div>
+
+        <hr className="border-gray-100 dark:border-gray-800" />
+
+        {/* 本地缓存清理 */}
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+              🧹 清理本地数据与文件缓存
+            </div>
+            <div className="text-[11px] text-gray-400 mt-0.5">
+              清理 App 临时存储与浏览器 LocalStorage 缓存，不会影响服务器数据。
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleClearCache}
+            className="px-4 py-2 text-xs rounded-xl border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 font-medium transition-colors whitespace-nowrap"
+          >
+            🗑️ 清理本地缓存
+          </button>
+        </div>
+
+        {cacheMessage && (
+          <div className="text-xs p-2.5 rounded-lg border bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300">
+            {cacheMessage}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+

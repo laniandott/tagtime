@@ -1,8 +1,34 @@
 import { useEffect, useState } from 'react'
-import { useStore, formatClock } from '../store'
-import { api } from '../api'
+import { useStore, formatClock, formatDuration } from '../store'
+import { api, resolveUploadUrl } from '../api'
 import type { TimeEntry, Tag, Memo } from '../types'
-import { formatDuration } from '../store'
+
+// 辅助函数：格式化时间为 YYYY/MM/DD HH:mm:ss
+const formatDateTimeWithSeconds = (isoStr: string) => {
+  const d = new Date(isoStr)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  const ss = String(d.getSeconds()).padStart(2, '0')
+  return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`
+}
+
+// 辅助函数：格式化时间为 HH:mm:ss
+const formatTimeWithSeconds = (isoStr: string) => {
+  const d = new Date(isoStr)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  const ss = String(d.getSeconds()).padStart(2, '0')
+  return `${hh}:${min}:${ss}`
+}
+
+// 转换 ISO 时间字符串为 datetime-local (精确到秒 YYYY-MM-DDTHH:mm:ss)
+const toLocalInputWithSeconds = (d: Date | string) => {
+  const date = typeof d === 'string' ? new Date(d) : d
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19)
+}
 
 export default function TimerPage() {
   const { tags, categories, running, clockOffset, start, stop, stopAll, quickCount } = useStore()
@@ -13,6 +39,7 @@ export default function TimerPage() {
   const [showManual, setShowManual] = useState(false)
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null)
   const [memoTargetEntry, setMemoTargetEntry] = useState<TimeEntry | null>(null)
+  const [pointTargetEntry, setPointTargetEntry] = useState<TimeEntry | null>(null)
   const [filterCat, setFilterCat] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   // 最近记录日期范围：默认显示当天
@@ -23,7 +50,7 @@ export default function TimerPage() {
   // 每秒刷新计时显示（有进行中的计时时）
   useEffect(() => {
     if (running.length === 0) return
-    setNow(Date.now()) // 立即同步，避免显示旧时间
+    setNow(Date.now())
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [running.length])
@@ -73,11 +100,9 @@ export default function TimerPage() {
     const tag = tags.find((t) => t.id === tagId)
     try {
       if (tag?.trackType === 'count') {
-        // 次数型：点击即打卡
         await quickCount(tagId)
         await loadRecent()
       } else {
-        // 时长型：开始计时
         await start(tagId)
       }
     } catch (e) {
@@ -109,6 +134,13 @@ export default function TimerPage() {
     }
   }
 
+  const handleDelete = async (id: string) => {
+    if (confirm('确定要删除这条时间记录吗？')) {
+      await api.timer.remove(id)
+      await loadRecent()
+    }
+  }
+
   // 按分类分组标签
   const tagsByCategory = categories.map((cat) => ({
     category: cat,
@@ -116,9 +148,29 @@ export default function TimerPage() {
   }))
   const uncategorized = tags.filter((t) => !t.categoryId)
 
+  // 按结束时间倒序排序（进行中的在最上方，即 endTime 为 null 当作无穷大，已结束的按 endTime 倒序）
+  const sortedRecent = [...recent]
+    .filter((e) => {
+      if (filterCat && !(filterCat === 'none' ? !e.tag?.categoryId : e.tag?.categoryId === filterCat)) return false
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase()
+        const tagName = e.tag?.name?.toLowerCase() ?? ''
+        const note = e.note?.toLowerCase() ?? ''
+        const memoMatch = e.memos?.some((m) => m.content.toLowerCase().includes(q)) ?? false
+        if (!tagName.includes(q) && !note.includes(q) && !memoMatch) return false
+      }
+      return true
+    })
+    .sort((a, b) => {
+      const timeA = a.endTime ? new Date(a.endTime).getTime() : Number.MAX_SAFE_INTEGER
+      const timeB = b.endTime ? new Date(b.endTime).getTime() : Number.MAX_SAFE_INTEGER
+      if (timeA !== timeB) return timeB - timeA
+      return new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
+    })
+
   return (
     <div className="space-y-6">
-      {/* 进行中的计时卡片（支持多个同步计时） */}
+      {/* 进行中的计时卡片 */}
       {running.length > 0 ? (
         <div className="space-y-3">
           {running.length > 1 && (
@@ -141,6 +193,7 @@ export default function TimerPage() {
               stopping={stoppingId === entry.id}
               onStop={(note) => handleStop(entry.id, note)}
               onAddMemo={() => setMemoTargetEntry(entry)}
+              onAddPointRecord={() => setPointTargetEntry(entry)}
             />
           ))}
         </div>
@@ -188,8 +241,8 @@ export default function TimerPage() {
                       <button
                         key={tag.id}
                         onClick={() => handleStart(tag.id)}
-                      className={`px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105 ${tag.trackType === 'count' ? 'border-dashed' : ''}`}
-                      style={{ borderColor: tag.color, color: tag.color }}
+                        className={`px-4 py-2 rounded-xl border font-medium text-sm transition-all hover:scale-105 ${tag.trackType === 'count' ? 'border-dashed' : ''}`}
+                        style={{ borderColor: tag.color, color: tag.color }}
                       >
                         {tag.icon ? `${tag.icon} ` : ''}{tag.name}
                         {tag.trackType === 'count' && <span className="ml-1 text-xs opacity-60">✓</span>}
@@ -221,12 +274,15 @@ export default function TimerPage() {
         )}
       </div>
 
-      {/* 最近记录 */}
+      {/* 最近记录时间线 */}
       <div>
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            最近记录
-          </h2>
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1.5">
+              <span>📅 活动时间线</span>
+              <span className="text-xs font-normal text-gray-400">（按结束时间倒序）</span>
+            </h2>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* 搜索框 */}
             <div className="relative">
@@ -234,7 +290,7 @@ export default function TimerPage() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索标题/备注…"
+                placeholder="搜索标题/备注/打点…"
                 className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-36 focus:w-48 transition-all focus:outline-none focus:border-brand"
               />
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
@@ -291,82 +347,44 @@ export default function TimerPage() {
             </select>
           </div>
         </div>
-        <div className="space-y-2">
-          {recent
-            .filter((e) => {
-              // 分类筛选
-              if (filterCat && !(filterCat === 'none' ? !e.tag?.categoryId : e.tag?.categoryId === filterCat)) return false
-              // 搜索筛选：匹配标签名或备注
-              if (searchQuery) {
-                const q = searchQuery.toLowerCase()
-                const tagName = e.tag?.name?.toLowerCase() ?? ''
-                const note = e.note?.toLowerCase() ?? ''
-                if (!tagName.includes(q) && !note.includes(q)) return false
-              }
-              return true
-            })
-            .map((e) => (
-            <div
-              key={e.id}
-              className="flex items-center justify-between rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-4 py-2.5"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <span
-                  className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                  style={{ background: e.tag?.color }}
-                />
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{e.tag?.name}</div>
-                  <div className="text-xs text-gray-400">
-                    {new Date(e.startTime).toLocaleString('zh-CN', { hour12: false })}
-                    {e.endTime ? ` → ${new Date(e.endTime).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}
-                  </div>
-                  {e.note && (
-                    <div className="text-xs text-gray-400 truncate mt-0.5">📝 {e.note}</div>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <span className="text-sm font-mono text-gray-500">
-                  {e.endTime ? formatDuration(new Date(e.endTime).getTime() - new Date(e.startTime).getTime()) : '进行中'}
-                </span>
-                <button
-                  onClick={() => setMemoTargetEntry(e)}
-                  className="text-gray-300 hover:text-brand text-sm"
-                  title="添加记事/日记"
-                >
-                  📝
-                </button>
-                <button
-                  onClick={() => setEditingEntry(e)}
-                  className="text-gray-300 hover:text-brand text-sm"
-                  title="编辑"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={async () => {
-                    await api.timer.remove(e.id)
-                    await loadRecent()
-                  }}
-                  className="text-gray-300 hover:text-red-500 text-sm"
-                  title="删除"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          ))}
-          {/* 空状态提示（仅在有标签时显示，避免首次使用时空白） */}
-          {tags.length > 0 && recent.length === 0 && (
-            <div className="text-center py-6 text-gray-400 text-sm">
+
+        {/* 最近活动时间线列表 */}
+        {sortedRecent.length > 0 ? (
+          <div className="pt-2">
+            {sortedRecent.map((e) => (
+              <TimelineEntryItem
+                key={e.id}
+                entry={e}
+                onAddMemo={(entry) => setMemoTargetEntry(entry)}
+                onAddPoint={(entry) => setPointTargetEntry(entry)}
+                onEdit={(entry) => setEditingEntry(entry)}
+                onDelete={(id) => handleDelete(id)}
+                onReload={loadRecent}
+              />
+            ))}
+          </div>
+        ) : (
+          tags.length > 0 && (
+            <div className="text-center py-8 text-gray-400 text-sm bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800">
               {dateRange === 'custom' && !customFrom && !customTo
                 ? '请选择日期区间'
                 : '该时间段暂无记录'}
             </div>
-          )}
-        </div>
+          )
+        )}
       </div>
+
+      {/* 点记录弹窗 */}
+      {pointTargetEntry && (
+        <PointRecordModal
+          entry={pointTargetEntry}
+          onClose={() => setPointTargetEntry(null)}
+          onSaved={async () => {
+            setPointTargetEntry(null)
+            await loadRecent()
+          }}
+        />
+      )}
 
       {/* 记事/日记弹窗 */}
       {memoTargetEntry && (
@@ -409,13 +427,14 @@ export default function TimerPage() {
   )
 }
 
-// 进行中计时卡片（含备注编辑）
-function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo }: {
+// 进行中计时卡片
+function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo, onAddPointRecord }: {
   entry: TimeEntry
   elapsed: number
   stopping: boolean
   onStop: (note?: string) => void
   onAddMemo: () => void
+  onAddPointRecord: () => void
 }) {
   const [note, setNote] = useState(entry.note ?? '')
   const [noteSaved, setNoteSaved] = useState(false)
@@ -428,8 +447,21 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo }: {
 
   return (
     <div className="rounded-2xl border-2 border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 p-6 text-center relative">
-      <div className="text-sm text-gray-500 dark:text-gray-400 mb-1">
-        正在计时 · {entry.tag?.category?.name ?? '未分类'}
+      <div className="text-sm text-gray-500 dark:text-gray-400 mb-2 flex items-center justify-center gap-2">
+        <span>正在计时</span>
+        {entry.tag?.category && (
+          <span
+            className="text-xs px-2.5 py-0.5 rounded-full font-medium border"
+            style={{
+              backgroundColor: `${entry.tag.category.color}18`,
+              color: entry.tag.category.color,
+              borderColor: `${entry.tag.category.color}40`,
+            }}
+          >
+            {entry.tag.category.icon ? `${entry.tag.category.icon} ` : ''}
+            {entry.tag.category.name}
+          </span>
+        )}
       </div>
       <div className="text-3xl font-bold mb-2" style={{ color: entry.tag?.color }}>
         {entry.tag?.name}
@@ -438,9 +470,9 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo }: {
         {formatClock(elapsed)}
       </div>
       <div className="text-xs text-gray-400 mb-4">
-        开始于 {new Date(entry.startTime).toLocaleTimeString('zh-CN')}
+        开始于 {formatTimeWithSeconds(entry.startTime)}
       </div>
-      {/* 备注编辑 & 记事入口 */}
+      {/* 备注编辑 */}
       <div className="flex gap-2 mb-4 max-w-sm mx-auto">
         <input
           value={note}
@@ -455,23 +487,391 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo }: {
           {noteSaved ? '✓ 已存' : '存备注'}
         </button>
       </div>
+      {/* 按钮行：记事 / 点记录 / 停止 */}
       <div className="flex justify-center items-center gap-3">
         <button
           type="button"
           onClick={onAddMemo}
-          className="px-4 py-2.5 rounded-xl border border-brand-300 dark:border-brand-700 text-brand font-medium hover:bg-brand-100 dark:hover:bg-brand-900/40 text-sm transition-colors"
+          className="px-4 py-2.5 rounded-xl border border-brand-300 dark:border-brand-700 text-brand font-medium hover:bg-brand-100 dark:hover:bg-brand-900/40 text-sm transition-colors flex items-center gap-1.5"
         >
           📝 记事 / 日记
         </button>
+
+        <button
+          type="button"
+          onClick={onAddPointRecord}
+          className="px-4 py-2.5 rounded-xl border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-50 dark:hover:bg-blue-900/40 text-sm transition-colors flex items-center gap-1.5"
+        >
+          📍 点记录
+        </button>
+
         <button
           onClick={() => onStop(note)}
           disabled={stopping}
-          className="px-8 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold disabled:opacity-50 transition-colors"
+          className="px-8 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold disabled:opacity-50 transition-colors flex items-center gap-1.5"
         >
           {stopping ? '停止中…' : '⏹ 停止'}
         </button>
       </div>
     </div>
+  )
+}
+
+// 活动时间线单条组件（节点线 + 结束时间倒序 + 嵌套二级点记录时间线）
+function TimelineEntryItem({
+  entry,
+  onAddMemo,
+  onAddPoint,
+  onEdit,
+  onDelete,
+  onReload,
+}: {
+  entry: TimeEntry
+  onAddMemo: (e: TimeEntry) => void
+  onAddPoint: (e: TimeEntry) => void
+  onEdit: (e: TimeEntry) => void
+  onDelete: (id: string) => void
+  onReload: () => void
+}) {
+  const hasMemos = Boolean(entry.memos && entry.memos.length > 0)
+  const [expanded, setExpanded] = useState(false)
+  const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [previewVideo, setPreviewVideo] = useState<string | null>(null)
+
+  const isRunning = !entry.endTime
+  const displayEndTime = entry.endTime ? formatTimeWithSeconds(entry.endTime) : '进行中'
+
+  return (
+    <div className="relative pl-8 pb-6 group last:pb-0">
+      {/* 时间线连接轴 (Vertical Line Stem) */}
+      <div className="absolute left-3 top-3 bottom-0 w-0.5 bg-gray-200 dark:bg-gray-800 group-last:hidden" />
+
+      {/* 时间线节点图标/圆圈 (Node Dot / Icon) */}
+      <div
+        className={`absolute -left-[1px] top-1.5 w-6 h-6 rounded-full border-2 border-white dark:border-gray-900 shadow-sm z-10 flex items-center justify-center text-xs transition-transform ${isRunning ? 'animate-pulse ring-2 ring-brand' : ''}`}
+        style={{ background: entry.tag?.color ?? '#6d5efc' }}
+      >
+        {entry.tag?.icon ? (
+          <span className="text-[11px] leading-none">{entry.tag.icon}</span>
+        ) : (
+          <span className="w-1.5 h-1.5 rounded-full bg-white" />
+        )}
+      </div>
+
+      {/* 时间线主体卡片 */}
+      <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200/80 dark:border-gray-800 p-4 shadow-sm hover:shadow-md transition-all">
+        {/* 卡片头部信息 */}
+        <div className="flex items-start justify-between gap-3 min-w-0">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">
+                {entry.tag?.icon ? `${entry.tag.icon} ` : ''}{entry.tag?.name}
+              </span>
+              {entry.tag?.category && (
+                <span
+                  className="text-xs px-2.5 py-0.5 rounded-full font-medium border"
+                  style={{
+                    backgroundColor: `${entry.tag.category.color}18`,
+                    color: entry.tag.category.color,
+                    borderColor: `${entry.tag.category.color}40`,
+                  }}
+                >
+                  {entry.tag.category.icon ? `${entry.tag.category.icon} ` : ''}
+                  {entry.tag.category.name}
+                </span>
+              )}
+              {isRunning && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium animate-pulse">
+                  ● 进行中
+                </span>
+              )}
+              {hasMemos && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="text-xs px-2 py-0.5 rounded-full bg-brand-50 dark:bg-brand-900/40 text-brand font-medium hover:bg-brand-100 transition-colors flex items-center gap-1"
+                >
+                  <span>{entry.memos!.length} 个点记录</span>
+                  <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
+                </button>
+              )}
+            </div>
+
+            {/* 时间线时间范围 (突出结束时间排序) */}
+            <div className="text-xs text-gray-400 font-mono mt-1 flex items-center gap-2 flex-wrap">
+              <span className="text-gray-600 dark:text-gray-300 font-medium bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">
+                结束: {displayEndTime}
+              </span>
+              <span>•</span>
+              <span>
+                {formatDateTimeWithSeconds(entry.startTime)}
+                {entry.endTime ? ` → ${formatTimeWithSeconds(entry.endTime)}` : ''}
+              </span>
+            </div>
+
+            {/* 备注 */}
+            {entry.note && (
+              <div className="text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded-lg px-2.5 py-1.5 mt-2 border border-gray-100 dark:border-gray-800 inline-block">
+                📝 {entry.note}
+              </div>
+            )}
+          </div>
+
+          {/* 右侧时长与操作按钮 */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-sm font-mono font-semibold text-brand bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 rounded-lg">
+              {entry.endTime
+                ? formatDuration(new Date(entry.endTime).getTime() - new Date(entry.startTime).getTime())
+                : '进行中'}
+            </span>
+            <button
+              onClick={() => onAddPoint(entry)}
+              className="text-xs px-2 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors flex items-center gap-1"
+              title="添加点记录"
+            >
+              📍 点记录
+            </button>
+            <button
+              onClick={() => onAddMemo(entry)}
+              className="text-gray-400 hover:text-brand p-1 text-sm transition-colors"
+              title="添加记事/日记"
+            >
+              📝
+            </button>
+            <button
+              onClick={() => onEdit(entry)}
+              className="text-gray-400 hover:text-brand p-1 text-sm transition-colors"
+              title="编辑"
+            >
+              ✎
+            </button>
+            <button
+              onClick={() => onDelete(entry.id)}
+              className="text-gray-400 hover:text-red-500 p-1 text-sm transition-colors"
+              title="删除"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* 二级菜单：点记录时间线轴 */}
+        {expanded && hasMemos && (
+          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800/80">
+            <div className="text-xs font-semibold text-gray-500 mb-2.5 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <span>📍 点记录时间轴</span>
+                <span className="text-gray-400 font-normal">({entry.memos!.length} 条)</span>
+              </span>
+              <button
+                onClick={() => onAddPoint(entry)}
+                className="text-brand text-xs font-normal hover:underline"
+              >
+                + 添加打点
+              </button>
+            </div>
+
+            <div className="space-y-2 pl-2 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-0.5 before:bg-brand-200 dark:before:bg-brand-900/50">
+              {entry.memos!.map((m) => (
+                <div key={m.id} className="space-y-1">
+                  <div className="relative pl-6 flex items-center justify-between group/memo bg-gray-50/80 dark:bg-gray-800/40 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg p-2 text-xs text-gray-700 dark:text-gray-200 transition-colors">
+                    <div className="absolute left-[7px] top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-brand" />
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="font-mono text-brand font-semibold text-xs flex-shrink-0">
+                        {formatTimeWithSeconds(m.createdAt)}
+                      </span>
+                      <span className="truncate">{m.content}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 opacity-0 group-hover/memo:opacity-100 transition-opacity flex-shrink-0 ml-2">
+                      <button
+                        onClick={() => setEditingMemo(m)}
+                        className="text-gray-400 hover:text-brand"
+                        title="编辑点记录"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (confirm('确定要删除这条点记录吗？')) {
+                            await api.memos.remove(m.id)
+                            await onReload()
+                          }
+                        }}
+                        className="text-gray-400 hover:text-red-500"
+                        title="删除点记录"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 照片/视频缩略图预览 */}
+                  {m.attachments && m.attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pl-6 pb-1">
+                      {m.attachments.map((att) =>
+                        att.mimeType.startsWith('image/') ? (
+                          <button
+                            key={att.id || att.path}
+                            type="button"
+                            onClick={() => setPreviewImage(resolveUploadUrl(att.path))}
+                            className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 flex-shrink-0 group/img relative"
+                          >
+                            <img
+                              src={resolveUploadUrl(att.path)}
+                              alt={att.filename}
+                              className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
+                            />
+                          </button>
+                        ) : att.mimeType.startsWith('video/') ? (
+                          <button
+                            key={att.id || att.path}
+                            type="button"
+                            onClick={() => setPreviewVideo(resolveUploadUrl(att.path))}
+                            className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-black flex items-center justify-center flex-shrink-0 group/vid relative"
+                          >
+                            <span className="text-xl">🎬</span>
+                            <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-white text-center truncate px-0.5">播放</span>
+                          </button>
+                        ) : (
+                          <span key={att.id || att.path} className="text-gray-400 text-[10px] bg-gray-200/60 dark:bg-gray-700/60 px-1.5 py-0.5 rounded">
+                            📎 {att.filename}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 编辑点记录弹窗 */}
+        {editingMemo && (
+          <MemoEditModal
+            memo={editingMemo}
+            onClose={() => setEditingMemo(null)}
+            onSaved={async () => {
+              setEditingMemo(null)
+              await onReload()
+            }}
+          />
+        )}
+
+        {/* 大图预览 Modal */}
+        {previewImage && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            onClick={() => setPreviewImage(null)}
+          >
+            <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+              <img
+                src={previewImage}
+                alt="图片预览"
+                className="max-w-full max-h-[85vh] rounded-lg shadow-2xl object-contain"
+              />
+              <button
+                onClick={() => setPreviewImage(null)}
+                className="absolute -top-10 right-0 text-white text-base hover:text-gray-300 font-medium"
+              >
+                ✕ 关闭
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 视频播放器 Modal */}
+        {previewVideo && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+            onClick={() => setPreviewVideo(null)}
+          >
+            <div className="relative max-w-4xl w-full max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+              <video
+                src={previewVideo}
+                controls
+                autoPlay
+                playsInline
+                preload="auto"
+                className="w-full max-h-[85vh] rounded-xl object-contain bg-black"
+              />
+              <button
+                onClick={() => setPreviewVideo(null)}
+                className="absolute -top-10 right-0 text-white text-base hover:text-gray-300 font-medium"
+              >
+                ✕ 关闭
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// 点记录弹窗
+export function PointRecordModal({
+  entry,
+  onClose,
+  onSaved,
+}: {
+  entry: TimeEntry
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [pointTime, setPointTime] = useState(toLocalInputWithSeconds(new Date()))
+  const [content, setContent] = useState('')
+  const [error, setError] = useState('')
+
+  const save = async () => {
+    if (!content.trim()) {
+      setError('请输入点记录内容')
+      return
+    }
+    setError('')
+    try {
+      await api.memos.create({
+        content: content.trim(),
+        timeEntryId: entry.id,
+        tagId: entry.tagId,
+        createdAt: new Date(pointTime).toISOString(),
+      })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <ModalShell title={`添加点记录 · ${entry.tag?.name ?? ''}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">打点时刻 (精准到秒)</label>
+          <input
+            type="datetime-local"
+            step="1"
+            value={pointTime}
+            onChange={(e) => setPointTime(e.target.value)}
+            className="input font-mono text-sm"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">这个时间点做了什么事？</label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={3}
+            placeholder="如：拉了个屎、看了下邮件、洗了个手..."
+            className="input"
+            autoFocus
+          />
+        </div>
+
+        {error && <div className="text-sm text-red-500">{error}</div>}
+      </div>
+      <FormActions onCancel={onClose} onSave={save} saveLabel="保存点记录" />
+    </ModalShell>
   )
 }
 
@@ -483,9 +883,9 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
   onSaved: () => void
 }) {
   const now = new Date()
-  const nowLocal = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  const nowLocal = toLocalInputWithSeconds(now)
   const twoHoursAgo = new Date(now.getTime() - 2 * 3600000)
-  const twoHoursAgoLocal = new Date(twoHoursAgo.getTime() - twoHoursAgo.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  const twoHoursAgoLocal = toLocalInputWithSeconds(twoHoursAgo)
 
   const [tagId, setTagId] = useState(tags[0]?.id ?? '')
   const [startTime, setStartTime] = useState(twoHoursAgoLocal)
@@ -537,21 +937,23 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm text-gray-500 mb-1">开始时间</label>
+            <label className="block text-sm text-gray-500 mb-1">开始时间 (带秒)</label>
             <input
               type="datetime-local"
+              step="1"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
-              className="input"
+              className="input font-mono text-sm"
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-500 mb-1">结束时间</label>
+            <label className="block text-sm text-gray-500 mb-1">结束时间 (带秒)</label>
             <input
               type="datetime-local"
+              step="1"
               value={endTime}
               onChange={(e) => setEndTime(e.target.value)}
-              className="input"
+              className="input font-mono text-sm"
             />
           </div>
         </div>
@@ -573,14 +975,9 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
   onClose: () => void
   onSaved: () => void
 }) {
-  const toLocalInput = (d: string) => {
-    const date = new Date(d)
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-  }
-
   const [tagId, setTagId] = useState(entry.tagId)
-  const [startTime, setStartTime] = useState(toLocalInput(entry.startTime))
-  const [endTime, setEndTime] = useState(entry.endTime ? toLocalInput(entry.endTime) : '')
+  const [startTime, setStartTime] = useState(toLocalInputWithSeconds(entry.startTime))
+  const [endTime, setEndTime] = useState(entry.endTime ? toLocalInputWithSeconds(entry.endTime) : '')
   const [note, setNote] = useState(entry.note ?? '')
   const [error, setError] = useState('')
 
@@ -616,17 +1013,24 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm text-gray-500 mb-1">开始时间</label>
-            <input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="input" />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-500 mb-1">结束时间</label>
+            <label className="block text-sm text-gray-500 mb-1">开始时间 (带秒)</label>
             <input
               type="datetime-local"
+              step="1"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="input font-mono text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">结束时间 (带秒)</label>
+            <input
+              type="datetime-local"
+              step="1"
               value={endTime}
               onChange={(e) => setEndTime(e.target.value)}
               placeholder={entry.endTime ? '' : '空表示进行中'}
-              className="input"
+              className="input font-mono text-sm"
             />
           </div>
         </div>
@@ -680,9 +1084,7 @@ export function MemoCreateModal({
   const [uploading, setUploading] = useState(false)
   const [attachments, setAttachments] = useState<{ filename: string; path: string; mimeType: string; size: number }[]>([])
   const [error, setError] = useState('')
-  // 自定义时间：默认当前时间
-  const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-  const [memoTime, setMemoTime] = useState(nowLocal)
+  const [memoTime, setMemoTime] = useState(toLocalInputWithSeconds(new Date()))
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -726,14 +1128,14 @@ export function MemoCreateModal({
   return (
     <ModalShell title={`添加日记 / 随手记 · ${entry.tag?.name ?? ''}`} onClose={onClose}>
       <div className="space-y-4">
-        {/* 自定义时间 */}
         <div>
-          <label className="block text-sm text-gray-500 mb-1">记事时间</label>
+          <label className="block text-sm text-gray-500 mb-1">记事时间 (精准到秒)</label>
           <input
             type="datetime-local"
+            step="1"
             value={memoTime}
             onChange={(e) => setMemoTime(e.target.value)}
-            className="input"
+            className="input font-mono text-sm"
           />
         </div>
 
@@ -762,13 +1164,12 @@ export function MemoCreateModal({
           {uploading && <div className="text-xs text-brand mt-1">文件上传中...</div>}
         </div>
 
-        {/* 已上传文件预览列表 */}
         {attachments.length > 0 && (
           <div className="grid grid-cols-3 gap-2 pt-2">
             {attachments.map((att, idx) => (
               <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-20 flex items-center justify-center">
                 {att.mimeType.startsWith('image/') ? (
-                  <img src={att.path} alt={att.filename} className="w-full h-full object-cover" />
+                  <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
                 ) : (
                   <div className="text-center p-1">
                     <span className="text-lg">🎬</span>
@@ -804,13 +1205,8 @@ export function MemoEditModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const toLocalInput = (d: string) => {
-    const date = new Date(d)
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-  }
-
   const [content, setContent] = useState(memo.content)
-  const [memoTime, setMemoTime] = useState(toLocalInput(memo.createdAt))
+  const [memoTime, setMemoTime] = useState(toLocalInputWithSeconds(memo.createdAt))
   const [uploading, setUploading] = useState(false)
   const [attachments, setAttachments] = useState(
     (memo.attachments ?? []).map((a) => ({
@@ -862,12 +1258,13 @@ export function MemoEditModal({
     <ModalShell title="编辑记事" onClose={onClose}>
       <div className="space-y-4">
         <div>
-          <label className="block text-sm text-gray-500 mb-1">记事时间</label>
+          <label className="block text-sm text-gray-500 mb-1">记事时间 (精准到秒)</label>
           <input
             type="datetime-local"
+            step="1"
             value={memoTime}
             onChange={(e) => setMemoTime(e.target.value)}
-            className="input"
+            className="input font-mono text-sm"
           />
         </div>
 
@@ -900,7 +1297,7 @@ export function MemoEditModal({
             {attachments.map((att, idx) => (
               <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-20 flex items-center justify-center">
                 {att.mimeType.startsWith('image/') ? (
-                  <img src={att.path} alt={att.filename} className="w-full h-full object-cover" />
+                  <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
                 ) : (
                   <div className="text-center p-1">
                     <span className="text-lg">🎬</span>

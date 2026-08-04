@@ -57,9 +57,10 @@ if (existsSync(webDist)) {
 }
 
 const port = Number(process.env.PORT ?? 3000)
+const host = process.env.HOST ?? '::'
 
 try {
-  const address = await app.listen({ port, host: '0.0.0.0' })
+  const address = await app.listen({ port, host })
   app.log.info(`TagTime server listening on ${address}`)
 } catch (err) {
   app.log.error(err)

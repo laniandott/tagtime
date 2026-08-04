@@ -10,13 +10,57 @@ import type {
   Memo,
 } from './types'
 
-const BASE = '/api'
+export function getServerHost(): string {
+  if (typeof localStorage !== 'undefined') {
+    const custom = localStorage.getItem('tagtime_server_url')
+    if (custom) return custom.replace(/\/$/, '')
+  }
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname
+    const port = window.location.port
+    const protocol = window.location.protocol
+
+    const isNative = Boolean(
+      (window as any).Capacitor?.isNativePlatform?.() ||
+      (window as any).Capacitor ||
+      protocol === 'capacitor:' ||
+      protocol === 'file:' ||
+      // 安卓 WebView 本地环境 (localhost:80 / localhost:443，即没有 5173开发端口和 3000服务器端口)
+      ((hostname === 'localhost' || hostname === '127.0.0.1') && (!port || port === '80' || port === '443'))
+    )
+    if (isNative) {
+      return 'http://812264226.xyz:3000'
+    }
+  }
+  return ''
+}
+
+export function resolveUploadUrl(path?: string | null): string {
+  if (!path) return ''
+  if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:')) {
+    return path
+  }
+  const host = getServerHost()
+  const cleanPath = path.startsWith('/') ? path : `/${path}`
+  return `${host}${cleanPath}`
+}
+
+export function setServerHost(url: string) {
+  if (typeof localStorage !== 'undefined') {
+    if (url.trim()) {
+      localStorage.setItem('tagtime_server_url', url.trim().replace(/\/$/, ''))
+    } else {
+      localStorage.removeItem('tagtime_server_url')
+    }
+  }
+}
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+  const host = getServerHost()
   const headers: Record<string, string> = {}
-  // 仅对有 body 的请求设置 Content-Type，避免 Fastify 拒绝空 JSON body（如 DELETE）
   if (opts?.body) headers['Content-Type'] = 'application/json'
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${host}/api${path}`
+  const res = await fetch(url, {
     ...opts,
     headers: { ...headers, ...(opts?.headers as Record<string, string> | undefined) },
   })
@@ -24,7 +68,6 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     const err = await res.json().catch(() => ({ error: res.statusText }))
     throw new Error(err.error ?? '请求失败')
   }
-  // 部分接口（如 DELETE）可能无响应体
   const text = await res.text()
   return (text ? JSON.parse(text) : null) as T
 }
@@ -135,9 +178,10 @@ export const api = {
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
     }) => req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     upload: async (file: File) => {
+      const host = getServerHost()
       const form = new FormData()
       form.append('file', file)
-      const res = await fetch('/api/memos/upload', {
+      const res = await fetch(`${host}/api/memos/upload`, {
         method: 'POST',
         body: form,
       })

@@ -1,0 +1,14 @@
+{
+  "appId": "com.tagtime.app",
+  "appName": "TagTime",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#6D5EFC"
+    }
+  }
+}

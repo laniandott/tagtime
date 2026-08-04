@@ -1,6 +1,15 @@
 import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
 
+const timeEntryInclude = {
+  tag: { include: { category: true } },
+  todo: true,
+  memos: {
+    orderBy: { createdAt: 'asc' as const },
+    include: { attachments: true },
+  },
+}
+
 export default async function timerRoutes(app: FastifyInstance) {
   // 次数型标签：点击即完成一条记录（startTime = endTime）
   app.post('/quick', async (req) => {
@@ -18,7 +27,7 @@ export default async function timerRoutes(app: FastifyInstance) {
         startTime: now,
         endTime: now,
       },
-      include: { tag: { include: { category: true } } },
+      include: timeEntryInclude,
     })
     return { ...entry, serverTime: now.toISOString() }
   })
@@ -33,7 +42,7 @@ export default async function timerRoutes(app: FastifyInstance) {
     }
     const entry = await prisma.timeEntry.create({
       data: { tagId, note, todoId: todoId || null },
-      include: { tag: { include: { category: true } } },
+      include: timeEntryInclude,
     })
     return { ...entry, serverTime: new Date().toISOString() }
   })
@@ -50,7 +59,7 @@ export default async function timerRoutes(app: FastifyInstance) {
     return prisma.timeEntry.update({
       where: { id },
       data: { endTime: new Date(), note: note ?? entry.note },
-      include: { tag: { include: { category: true } } },
+      include: timeEntryInclude,
     })
   })
 
@@ -67,7 +76,7 @@ export default async function timerRoutes(app: FastifyInstance) {
   app.get('/current', async () => {
     const running = await prisma.timeEntry.findMany({
       where: { endTime: null },
-      include: { tag: { include: { category: true } }, todo: true },
+      include: timeEntryInclude,
       orderBy: { startTime: 'asc' },
     })
     return { running, serverTime: new Date().toISOString() }
@@ -83,9 +92,6 @@ export default async function timerRoutes(app: FastifyInstance) {
     const where: Record<string, unknown> = {}
     if (tagId) where.tagId = tagId
     if (from || to) {
-      // 查询与 [from, to] 有重叠的记录：
-      // startTime <= to AND (endTime >= from OR endTime IS NULL)
-      // 这样跨午夜的计时也能被正确返回
       const andCond: Record<string, unknown>[] = []
       if (to) andCond.push({ startTime: { lte: new Date(to) } })
       if (from) andCond.push({ OR: [{ endTime: { gte: new Date(from) } }, { endTime: null }] })
@@ -94,7 +100,7 @@ export default async function timerRoutes(app: FastifyInstance) {
     return prisma.timeEntry.findMany({
       where,
       orderBy: { startTime: 'desc' },
-      include: { tag: { include: { category: true } }, todo: true },
+      include: timeEntryInclude,
       take: 500,
     })
   })
@@ -133,7 +139,7 @@ export default async function timerRoutes(app: FastifyInstance) {
         note,
         todoId: todoId || null,
       },
-      include: { tag: { include: { category: true } } },
+      include: timeEntryInclude,
     })
   })
 
@@ -155,6 +161,7 @@ export default async function timerRoutes(app: FastifyInstance) {
           note,
           tagId,
         },
+        include: timeEntryInclude,
       })
     } catch (e) {
       reply.code(404)

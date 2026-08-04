@@ -1,15 +1,17 @@
 import type { FastifyInstance } from 'fastify'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mkdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import prisma from '../db.js'
 
 // 确保上传目录存在
-const UPLOAD_DIR = process.env.DATA_DIR
-  ? join(process.env.DATA_DIR, 'uploads')
+const DATA_DIR = process.env.DATA_DIR
+  ? resolve(process.env.DATA_DIR)
   : existsSync('/data')
-  ? '/data/uploads'
-  : join(process.cwd(), 'data', 'uploads')
+  ? '/data'
+  : resolve(process.cwd(), 'data')
+
+const UPLOAD_DIR = join(DATA_DIR, 'uploads')
 
 if (!existsSync(UPLOAD_DIR)) {
   mkdirSync(UPLOAD_DIR, { recursive: true })
