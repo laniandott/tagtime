@@ -713,11 +713,12 @@ function TimelineSection() {
     loadMemos()
   }, [loadMemos])
 
-  // 搜索过滤：匹配日记内容或关联标签名
+  // 搜索过滤：只展示日记/随手记，严格排除打点/点记录（type === 'point'）
   const filteredMemos = useMemo(() => {
-    if (!searchQuery) return memos
+    const diaryOnlyMemos = memos.filter((m) => m.type !== 'point')
+    if (!searchQuery) return diaryOnlyMemos
     const q = searchQuery.toLowerCase()
-    return memos.filter((m) => {
+    return diaryOnlyMemos.filter((m) => {
       const content = m.content?.toLowerCase() ?? ''
       const tagName = (m.tag?.name ?? m.timeEntry?.tag?.name ?? '').toLowerCase()
       return content.includes(q) || tagName.includes(q)
