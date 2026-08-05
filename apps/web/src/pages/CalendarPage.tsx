@@ -874,8 +874,9 @@ function TimelineSection() {
                       {videos.map((vid) => (
                         <div key={vid.id} className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 bg-black">
                           <video
-                            src={vid.path}
+                            src={resolveUploadUrl(vid.path)}
                             controls
+                            playsInline
                             className="w-full max-h-64 object-contain"
                           />
                           <div className="text-[10px] text-gray-400 px-2 py-1 bg-gray-900 truncate">
