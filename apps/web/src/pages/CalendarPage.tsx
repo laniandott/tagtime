@@ -712,11 +712,12 @@ function TimelineSection() {
     loadMemos()
   }, [loadMemos])
 
-  // 搜索过滤：匹配日记内容或关联标签名
+  // 搜索过滤：严格排除打点/点记录（timeEntryId 存在的记录），只展示纯独立日记
   const filteredMemos = useMemo(() => {
-    if (!searchQuery) return memos
+    const standaloneMemos = memos.filter((m) => !m.timeEntryId)
+    if (!searchQuery) return standaloneMemos
     const q = searchQuery.toLowerCase()
-    return memos.filter((m) => {
+    return standaloneMemos.filter((m) => {
       const content = m.content?.toLowerCase() ?? ''
       const tagName = (m.tag?.name ?? m.timeEntry?.tag?.name ?? '').toLowerCase()
       return content.includes(q) || tagName.includes(q)

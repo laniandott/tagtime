@@ -487,20 +487,12 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo, onAddPointR
           {noteSaved ? '✓ 已存' : '存备注'}
         </button>
       </div>
-      {/* 按钮行：记事 / 点记录 / 停止 */}
+      {/* 按钮行：点记录 / 停止 */}
       <div className="flex justify-center items-center gap-3">
         <button
           type="button"
-          onClick={onAddMemo}
-          className="px-4 py-2.5 rounded-xl border border-brand-300 dark:border-brand-700 text-brand font-medium hover:bg-brand-100 dark:hover:bg-brand-900/40 text-sm transition-colors flex items-center gap-1.5"
-        >
-          📝 记事 / 日记
-        </button>
-
-        <button
-          type="button"
           onClick={onAddPointRecord}
-          className="px-4 py-2.5 rounded-xl border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-50 dark:hover:bg-blue-900/40 text-sm transition-colors flex items-center gap-1.5"
+          className="px-5 py-2.5 rounded-xl border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-50 dark:hover:bg-blue-900/40 text-sm transition-colors flex items-center gap-1.5"
         >
           📍 点记录
         </button>
