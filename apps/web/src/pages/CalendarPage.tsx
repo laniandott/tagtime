@@ -699,7 +699,7 @@ function TimelineSection() {
   const loadMemos = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await api.memos.list({ days })
+      const data = await api.memos.list({ days, standaloneOnly: true })
       setMemos(data)
     } catch (e) {
       setMemos([])

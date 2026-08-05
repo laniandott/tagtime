@@ -22,17 +22,21 @@ export { UPLOAD_DIR }
 export default async function memoRoutes(app: FastifyInstance) {
   // 1. 获取 Memos 列表（支持时间切片或绑定计时ID）
   app.get('/', async (req) => {
-    const { timeEntryId, tagId, days, from, to } = req.query as {
+    const { timeEntryId, tagId, days, from, to, standaloneOnly } = req.query as {
       timeEntryId?: string
       tagId?: string
       days?: string
       from?: string
       to?: string
+      standaloneOnly?: string
     }
 
     const where: Record<string, unknown> = {}
     if (timeEntryId) where.timeEntryId = timeEntryId
     if (tagId) where.tagId = tagId
+    if (standaloneOnly === 'true' || standaloneOnly === '1') {
+      where.timeEntryId = null
+    }
 
     if (from || to || days) {
       where.createdAt = {}
