@@ -985,6 +985,7 @@ function NewJournalModal({
     try {
       await api.memos.create({
         content: content.trim() || '（无文字随记）',
+        type: 'diary',
         tagId: tagId || undefined,
         createdAt: new Date(memoTime).toISOString(),
         attachments,

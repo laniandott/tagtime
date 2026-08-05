@@ -860,6 +860,7 @@ export function PointRecordModal({
     try {
       await api.memos.create({
         content: content.trim(),
+        type: 'point',
         timeEntryId: entry.id,
         tagId: entry.tagId,
         createdAt: new Date(pointTime).toISOString(),
@@ -1142,6 +1143,7 @@ export function MemoCreateModal({
     try {
       await api.memos.create({
         content: content.trim() || '（无文字附记）',
+        type: 'diary',
         timeEntryId: entry.id,
         tagId: entry.tagId,
         createdAt: new Date(memoTime).toISOString(),
