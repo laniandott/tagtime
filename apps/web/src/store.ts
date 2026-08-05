@@ -88,21 +88,35 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadAll: async () => {
     set({ loading: true })
-    const [categories, tags, timerData] = await Promise.all([
-      api.categories.list(),
-      api.tags.list(),
-      api.timer.current(),
-    ])
-    const clockOffset = Date.now() - new Date(timerData.serverTime).getTime()
-    set({ categories, tags, running: timerData.running, clockOffset, loading: false })
-    syncNativeNotification(timerData.running)
+    try {
+      const [categories, tags, timerData] = await Promise.all([
+        api.categories.list().catch(() => []),
+        api.tags.list().catch(() => []),
+        api.timer.current().catch(() => ({ running: [], serverTime: new Date().toISOString() })),
+      ])
+      const categoriesList = Array.isArray(categories) ? categories : []
+      const tagsList = Array.isArray(tags) ? tags : []
+      const runningList = Array.isArray(timerData?.running) ? timerData.running : []
+      const clockOffset = timerData?.serverTime ? Date.now() - new Date(timerData.serverTime).getTime() : 0
+
+      set({ categories: categoriesList, tags: tagsList, running: runningList, clockOffset, loading: false })
+      syncNativeNotification(runningList)
+    } catch (e) {
+      console.error('loadAll error:', e)
+      set({ loading: false })
+    }
   },
 
   loadRunning: async () => {
-    const timerData = await api.timer.current()
-    const clockOffset = Date.now() - new Date(timerData.serverTime).getTime()
-    set({ running: timerData.running, clockOffset })
-    syncNativeNotification(timerData.running)
+    try {
+      const timerData = await api.timer.current().catch(() => ({ running: [], serverTime: new Date().toISOString() }))
+      const runningList = Array.isArray(timerData?.running) ? timerData.running : []
+      const clockOffset = timerData?.serverTime ? Date.now() - new Date(timerData.serverTime).getTime() : 0
+      set({ running: runningList, clockOffset })
+      syncNativeNotification(runningList)
+    } catch (e) {
+      console.error('loadRunning error:', e)
+    }
   },
 
   start: async (tagId, note, todoId) => {
