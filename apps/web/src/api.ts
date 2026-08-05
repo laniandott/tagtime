@@ -156,7 +156,7 @@ export const api = {
     remove: (id: string) => req(`/goals/${id}`, { method: 'DELETE' }),
   },
   memos: {
-    list: (params?: { timeEntryId?: string; tagId?: string; days?: number; from?: string; to?: string; standaloneOnly?: boolean | string }) => {
+    list: (params?: { timeEntryId?: string; tagId?: string; days?: number; from?: string; to?: string; standaloneOnly?: boolean | string; type?: string }) => {
       const q = new URLSearchParams()
       if (params?.timeEntryId) q.set('timeEntryId', params.timeEntryId)
       if (params?.tagId) q.set('tagId', params.tagId)
@@ -164,10 +164,12 @@ export const api = {
       if (params?.from) q.set('from', params.from)
       if (params?.to) q.set('to', params.to)
       if (params?.standaloneOnly) q.set('standaloneOnly', String(params.standaloneOnly))
+      if (params?.type) q.set('type', params.type)
       return req<Memo[]>(`/memos?${q}`)
     },
     create: (data: {
       content: string
+      type?: 'point' | 'diary'
       timeEntryId?: string
       tagId?: string
       createdAt?: string

@@ -110,9 +110,11 @@ model Goal {
 }
 
 /// 记事/日记：与 TimeEntry 建立勾稽关联，支持富文本与多媒体附件
+/// type: "point"=点记录（计时过程中的里程碑节点），"diary"=日记/随感（随笔图文记录）
 model Memo {
   id          String   @id @default(cuid())
   content     String   // 记事/日记内容
+  type        String   @default("diary") // point | diary
   timeEntryId String?  // 关联的具体计时记录
   tagId       String?  // 可选关联标签
   createdAt   DateTime @default(now())
@@ -125,6 +127,7 @@ model Memo {
   @@index([timeEntryId])
   @@index([createdAt])
   @@index([tagId])
+  @@index([type])
 }
 
 /// 附件：图片或视频文件

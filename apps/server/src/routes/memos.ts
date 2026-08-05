@@ -20,20 +20,22 @@ if (!existsSync(UPLOAD_DIR)) {
 export { UPLOAD_DIR }
 
 export default async function memoRoutes(app: FastifyInstance) {
-  // 1. 获取 Memos 列表（支持时间切片或绑定计时ID）
+  // 1. 获取 Memos 列表（支持时间切片或绑定计时ID及类型筛选）
   app.get('/', async (req) => {
-    const { timeEntryId, tagId, days, from, to, standaloneOnly } = req.query as {
+    const { timeEntryId, tagId, days, from, to, standaloneOnly, type } = req.query as {
       timeEntryId?: string
       tagId?: string
       days?: string
       from?: string
       to?: string
       standaloneOnly?: string
+      type?: string
     }
 
     const where: Record<string, unknown> = {}
     if (timeEntryId) where.timeEntryId = timeEntryId
     if (tagId) where.tagId = tagId
+    if (type) (where as any).type = type
     if (standaloneOnly === 'true' || standaloneOnly === '1') {
       where.timeEntryId = null
     }
@@ -65,13 +67,14 @@ export default async function memoRoutes(app: FastifyInstance) {
     })
   })
 
-  // 2. 创建 Memo（支持自定义创建时间）
+  // 2. 创建 Memo（支持自定义创建时间与类型 point/diary）
   app.post('/', async (req, reply) => {
-    const { content, timeEntryId, tagId, attachments, createdAt } = req.body as {
+    const { content, timeEntryId, tagId, attachments, createdAt, type } = req.body as {
       content: string
       timeEntryId?: string
       tagId?: string
       createdAt?: string
+      type?: string
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
     }
 
@@ -83,6 +86,7 @@ export default async function memoRoutes(app: FastifyInstance) {
     const memo = await prisma.memo.create({
       data: {
         content: content.trim(),
+        type: (type || 'diary') as any,
         timeEntryId: timeEntryId || null,
         tagId: tagId || null,
         createdAt: createdAt ? new Date(createdAt) : undefined,

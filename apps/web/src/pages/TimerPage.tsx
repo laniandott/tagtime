@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useStore, formatClock, formatDuration } from '../store'
 import { api, resolveUploadUrl } from '../api'
 import type { TimeEntry, Tag, Memo } from '../types'
@@ -487,14 +487,22 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo, onAddPointR
           {noteSaved ? '✓ 已存' : '存备注'}
         </button>
       </div>
-      {/* 按钮行：点记录 / 停止 */}
+      {/* 按钮行：点记录 / 记日记 / 停止 */}
       <div className="flex justify-center items-center gap-3">
         <button
           type="button"
           onClick={onAddPointRecord}
-          className="px-5 py-2.5 rounded-xl border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-50 dark:hover:bg-blue-900/40 text-sm transition-colors flex items-center gap-1.5"
+          className="px-4 py-2.5 rounded-xl border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-50 dark:hover:bg-blue-900/40 text-sm transition-colors flex items-center gap-1.5"
         >
           📍 点记录
+        </button>
+
+        <button
+          type="button"
+          onClick={onAddMemo}
+          className="px-4 py-2.5 rounded-xl border border-brand-300 dark:border-brand-700 text-brand font-medium hover:bg-brand-100 dark:hover:bg-brand-900/40 text-sm transition-colors flex items-center gap-1.5"
+        >
+          📝 记日记
         </button>
 
         <button
@@ -509,7 +517,7 @@ function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo, onAddPointR
   )
 }
 
-// 活动时间线单条组件（节点线 + 结束时间倒序 + 嵌套二级点记录时间线）
+// 活动时间线单条组件（节点线 + 结束时间倒序 + 内联下拉点记录/日记）
 function TimelineEntryItem({
   entry,
   onAddMemo,
@@ -525,8 +533,11 @@ function TimelineEntryItem({
   onDelete: (id: string) => void
   onReload: () => void
 }) {
-  const hasMemos = Boolean(entry.memos && entry.memos.length > 0)
-  const [showPointsModal, setShowPointsModal] = useState(false)
+  const pointMemos = useMemo(() => (entry.memos || []).filter((m) => m.type === 'point'), [entry.memos])
+  const diaryMemos = useMemo(() => (entry.memos || []).filter((m) => m.type !== 'point'), [entry.memos])
+
+  const [showPoints, setShowPoints] = useState(false)
+  const [showDiaries, setShowDiaries] = useState(false)
   const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [previewVideo, setPreviewVideo] = useState<string | null>(null)
@@ -578,12 +589,24 @@ function TimelineEntryItem({
                   ● 进行中
                 </span>
               )}
-              {hasMemos && (
+
+              {/* 小三角折叠/展开：点记录 */}
+              {pointMemos.length > 0 && (
                 <button
-                  onClick={() => setShowPointsModal(true)}
-                  className="text-xs px-2.5 py-0.5 rounded-full bg-brand-50 dark:bg-brand-900/40 text-brand font-medium hover:bg-brand-100 transition-colors flex items-center gap-1"
+                  onClick={() => setShowPoints(!showPoints)}
+                  className="text-xs px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-100 transition-colors flex items-center gap-1"
                 >
-                  <span>📌 {entry.memos!.length}条点记录</span>
+                  <span>{showPoints ? '▼' : '►'} 📍 点记录 ({pointMemos.length}条)</span>
+                </button>
+              )}
+
+              {/* 小三角折叠/展开：日记/随感 */}
+              {diaryMemos.length > 0 && (
+                <button
+                  onClick={() => setShowDiaries(!showDiaries)}
+                  className="text-xs px-2.5 py-0.5 rounded-full bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-300 font-medium hover:bg-green-100 transition-colors flex items-center gap-1"
+                >
+                  <span>{showDiaries ? '▼' : '►'} 📝 日记 ({diaryMemos.length}篇)</span>
                 </button>
               )}
             </div>
@@ -603,12 +626,12 @@ function TimelineEntryItem({
             {/* 备注 */}
             {entry.note && (
               <div className="text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded-lg px-2.5 py-1.5 mt-2 border border-gray-100 dark:border-gray-800 inline-block">
-                📝 {entry.note}
+                💬 {entry.note}
               </div>
             )}
           </div>
 
-          {/* 右侧时长与操作按钮 */}
+          {/* 右侧时长与操作按钮：点记录 / 记日记 / 编辑 / 删除 */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className="text-sm font-mono font-semibold text-brand bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 rounded-lg">
               {entry.endTime
@@ -620,7 +643,14 @@ function TimelineEntryItem({
               className="text-xs px-2 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors flex items-center gap-1"
               title="添加点记录"
             >
-              📍 点记录
+              📍 打点
+            </button>
+            <button
+              onClick={() => onAddMemo(entry)}
+              className="text-xs px-2 py-1.5 rounded-lg border border-brand-200 dark:border-brand-800 text-brand hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors flex items-center gap-1"
+              title="写关联日记"
+            >
+              📝 记日记
             </button>
             <button
               onClick={() => onEdit(entry)}
@@ -639,114 +669,103 @@ function TimelineEntryItem({
           </div>
         </div>
 
-        {/* 二级菜单弹窗：查看点记录列表 */}
-        {showPointsModal && hasMemos && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
-            onClick={() => setShowPointsModal(false)}
-          >
-            <div
-              className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-lg shadow-2xl space-y-4 max-h-[85vh] flex flex-col border border-gray-200 dark:border-gray-800"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">📍</span>
-                  <h3 className="font-bold text-base">
-                    {entry.tag?.icon ? `${entry.tag.icon} ` : ''}{entry.tag?.name} · 点记录 ({entry.memos!.length}条)
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setShowPointsModal(false)}
-                  className="text-gray-400 hover:text-gray-600 text-lg px-1"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* 点记录列表 */}
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                {entry.memos!.map((m) => (
-                  <div key={m.id} className="p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800/80 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-brand font-semibold text-xs">
-                        {formatTimeWithSeconds(m.createdAt)}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setEditingMemo(m)}
-                          className="text-xs text-gray-400 hover:text-brand"
-                        >
-                          ✎ 编辑
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (confirm('确定要删除这条点记录吗？')) {
-                              await api.memos.remove(m.id)
-                              await onReload()
-                            }
-                          }}
-                          className="text-xs text-gray-400 hover:text-red-500"
-                        >
-                          ✕ 删除
-                        </button>
-                      </div>
-                    </div>
-                    <div className="text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{m.content}</div>
-
-                    {/* 照片与视频 */}
-                    {m.attachments && m.attachments.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {m.attachments.map((att) =>
-                          att.mimeType.startsWith('image/') ? (
-                            <button
-                              key={att.id || att.path}
-                              type="button"
-                              onClick={() => setPreviewImage(resolveUploadUrl(att.path))}
-                              className="w-14 h-14 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 flex-shrink-0"
-                            >
-                              <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
-                            </button>
-                          ) : att.mimeType.startsWith('video/') ? (
-                            <button
-                              key={att.id || att.path}
-                              type="button"
-                              onClick={() => setPreviewVideo(resolveUploadUrl(att.path))}
-                              className="w-14 h-14 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-black flex items-center justify-center flex-shrink-0 relative"
-                            >
-                              <span className="text-xl">🎬</span>
-                              <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-white text-center">播放</span>
-                            </button>
-                          ) : null
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex justify-between items-center pt-3 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">
-                <button
-                  onClick={() => {
-                    setShowPointsModal(false)
-                    onAddPoint(entry)
+        {/* 内联下拉：点记录列表 */}
+        {showPoints && pointMemos.length > 0 && (
+          <div className="mt-3 rounded-xl border border-blue-100 dark:border-blue-900/50 bg-blue-50/40 dark:bg-blue-900/10 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                <span className="text-[10px]">▼</span> 📍 点记录 ({pointMemos.length}条)
+              </span>
+              <button
+                onClick={() => onAddPoint(entry)}
+                className="text-xs px-2 py-1 rounded-lg bg-brand text-white font-medium hover:bg-brand-600 transition-colors"
+              >
+                + 添加打点
+              </button>
+            </div>
+            <div className="space-y-2">
+              {pointMemos.map((m: Memo) => (
+                <MemoInlineItem
+                  key={m.id}
+                  memo={m}
+                  onEdit={() => setEditingMemo(m)}
+                  onDelete={async () => {
+                    if (confirm('确定要删除这条点记录吗？')) {
+                      await api.memos.remove(m.id)
+                      await onReload()
+                    }
                   }}
-                  className="px-4 py-2 rounded-xl bg-brand text-white text-xs font-medium hover:bg-brand-600 transition-colors flex items-center gap-1"
-                >
-                  <span>+ 添加新打点</span>
-                </button>
-                <button
-                  onClick={() => setShowPointsModal(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-800 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-                >
-                  关闭
-                </button>
-              </div>
+                  onPreviewImage={(url) => setPreviewImage(url)}
+                  onPreviewVideo={(url) => setPreviewVideo(url)}
+                />
+              ))}
             </div>
           </div>
         )}
 
-        {/* 编辑点记录弹窗 */}
+        {/* 内联下拉：日记列表 */}
+        {showDiaries && diaryMemos.length > 0 && (
+          <div className="mt-3 rounded-xl border border-green-100 dark:border-green-900/50 bg-green-50/40 dark:bg-green-900/10 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-green-600 dark:text-green-400 flex items-center gap-1">
+                <span className="text-[10px]">▼</span> 📝 关联日记 ({diaryMemos.length}篇)
+              </span>
+              <button
+                onClick={() => onAddMemo(entry)}
+                className="text-xs px-2 py-1 rounded-lg bg-brand text-white font-medium hover:bg-brand-600 transition-colors"
+              >
+                + 写日记
+              </button>
+            </div>
+            <div className="space-y-2">
+              {diaryMemos.map((m: Memo) => (
+                <MemoInlineItem
+                  key={m.id}
+                  memo={m}
+                  onEdit={() => setEditingMemo(m)}
+                  onDelete={async () => {
+                    if (confirm('确定要删除这篇日记吗？')) {
+                      await api.memos.remove(m.id)
+                      await onReload()
+                    }
+                  }}
+                  onPreviewImage={(url) => setPreviewImage(url)}
+                  onPreviewVideo={(url) => setPreviewVideo(url)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 大图预览弹窗 */}
+        {previewImage && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+            onClick={() => setPreviewImage(null)}
+          >
+            <img src={previewImage} alt="大图预览" className="max-w-full max-h-full rounded-lg object-contain" />
+          </div>
+        )}
+
+        {/* 视频全屏播放弹窗 */}
+        {previewVideo && (
+          <div
+            className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+            onClick={() => setPreviewVideo(null)}
+          >
+            <div className="relative max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => setPreviewVideo(null)}
+                className="absolute -top-10 right-0 text-white text-xl font-bold p-2"
+              >
+                ✕ 关闭
+              </button>
+              <video src={previewVideo} controls autoPlay className="w-full max-h-[80vh] rounded-lg" />
+            </div>
+          </div>
+        )}
+
+        {/* 编辑弹窗 */}
         {editingMemo && (
           <MemoEditModal
             memo={editingMemo}
@@ -757,54 +776,63 @@ function TimelineEntryItem({
             }}
           />
         )}
-
-        {/* 大图预览 Modal */}
-        {previewImage && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-            onClick={() => setPreviewImage(null)}
-          >
-            <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-              <img
-                src={previewImage}
-                alt="图片预览"
-                className="max-w-full max-h-[85vh] rounded-lg shadow-2xl object-contain"
-              />
-              <button
-                onClick={() => setPreviewImage(null)}
-                className="absolute -top-10 right-0 text-white text-base hover:text-gray-300 font-medium"
-              >
-                ✕ 关闭
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 视频播放器 Modal */}
-        {previewVideo && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
-            onClick={() => setPreviewVideo(null)}
-          >
-            <div className="relative max-w-4xl w-full max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-              <video
-                src={previewVideo}
-                controls
-                autoPlay
-                playsInline
-                preload="auto"
-                className="w-full max-h-[85vh] rounded-xl object-contain bg-black"
-              />
-              <button
-                onClick={() => setPreviewVideo(null)}
-                className="absolute -top-10 right-0 text-white text-base hover:text-gray-300 font-medium"
-              >
-                ✕ 关闭
-              </button>
-            </div>
-          </div>
-        )}
       </div>
+    </div>
+  )
+}
+
+// 内联展示单条 Memo（点记录 / 日记通用）
+function MemoInlineItem({
+  memo,
+  onEdit,
+  onDelete,
+  onPreviewImage,
+  onPreviewVideo,
+}: {
+  memo: Memo
+  onEdit: () => void
+  onDelete: () => void
+  onPreviewImage: (url: string) => void
+  onPreviewVideo: (url: string) => void
+}) {
+  return (
+    <div className="p-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-xs text-brand font-semibold">
+          {formatTimeWithSeconds(memo.createdAt)}
+        </span>
+        <div className="flex items-center gap-2">
+          <button onClick={onEdit} className="text-xs text-gray-400 hover:text-brand">✎ 编辑</button>
+          <button onClick={onDelete} className="text-xs text-gray-400 hover:text-red-500">✕ 删除</button>
+        </div>
+      </div>
+      <div className="text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words">{memo.content}</div>
+      {memo.attachments && memo.attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {memo.attachments.map((att) =>
+            att.mimeType.startsWith('image/') ? (
+              <button
+                key={att.id || att.path}
+                type="button"
+                onClick={() => onPreviewImage(resolveUploadUrl(att.path))}
+                className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 flex-shrink-0"
+              >
+                <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
+              </button>
+            ) : att.mimeType.startsWith('video/') ? (
+              <button
+                key={att.id || att.path}
+                type="button"
+                onClick={() => onPreviewVideo(resolveUploadUrl(att.path))}
+                className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-black flex items-center justify-center flex-shrink-0 relative"
+              >
+                <span className="text-lg">🎬</span>
+                <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-white text-center">播放</span>
+              </button>
+            ) : null
+          )}
+        </div>
+      )}
     </div>
   )
 }

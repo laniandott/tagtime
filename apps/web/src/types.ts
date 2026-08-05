@@ -33,6 +33,7 @@ export interface Attachment {
 export interface Memo {
   id: string
   content: string
+  type?: 'point' | 'diary'
   timeEntryId: string | null
   tagId: string | null
   createdAt: string
