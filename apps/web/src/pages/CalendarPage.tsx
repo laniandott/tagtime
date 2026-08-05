@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { api, resolveUploadUrl } from '../api'
-import { formatDuration } from '../store'
+import { formatDuration, useStore } from '../store'
 import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
 
@@ -694,12 +694,13 @@ function TimelineSection() {
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [activeAddModalEntry, setActiveAddModalEntry] = useState<TimeEntry | null>(null)
   const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
+  const [showNewJournalModal, setShowNewJournalModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
   const loadMemos = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await api.memos.list({ days, standaloneOnly: true })
+      const data = await api.memos.list({ days })
       setMemos(data)
     } catch (e) {
       setMemos([])
@@ -712,12 +713,11 @@ function TimelineSection() {
     loadMemos()
   }, [loadMemos])
 
-  // 搜索过滤：严格排除打点/点记录（timeEntryId 存在的记录），只展示纯独立日记
+  // 搜索过滤：匹配日记内容或关联标签名
   const filteredMemos = useMemo(() => {
-    const standaloneMemos = memos.filter((m) => !m.timeEntryId)
-    if (!searchQuery) return standaloneMemos
+    if (!searchQuery) return memos
     const q = searchQuery.toLowerCase()
-    return standaloneMemos.filter((m) => {
+    return memos.filter((m) => {
       const content = m.content?.toLowerCase() ?? ''
       const tagName = (m.tag?.name ?? m.timeEntry?.tag?.name ?? '').toLowerCase()
       return content.includes(q) || tagName.includes(q)
@@ -731,8 +731,13 @@ function TimelineSection() {
         <div className="flex items-center gap-3">
           <h2 className="text-base font-bold flex items-center gap-2">
             <span>📖 动态时间线 · 日记/随手记</span>
-            <span className="text-xs font-normal text-gray-400 hidden sm:inline">（与计时形成勾稽关系）</span>
           </h2>
+          <button
+            onClick={() => setShowNewJournalModal(true)}
+            className="px-3 py-1 rounded-lg bg-brand text-white text-xs font-medium hover:bg-brand-600 transition-colors flex items-center gap-1 shadow-xs"
+          >
+            <span>✍️ + 写日记</span>
+          </button>
           {/* 搜索框 */}
           <div className="relative">
             <input
@@ -759,7 +764,7 @@ function TimelineSection() {
               {d === 1 ? '1天 (今天)' : d === 7 ? '7天 (本周)' : '30天 (本月)'}
             </button>
           ))}
-          </div>
+        </div>
       </div>
 
       {/* 动态卡片时间轴流 */}
@@ -919,6 +924,156 @@ function TimelineSection() {
           }}
         />
       )}
+
+      {/* 新建独立日记弹窗 */}
+      {showNewJournalModal && (
+        <NewJournalModal
+          onClose={() => setShowNewJournalModal(false)}
+          onSaved={() => {
+            setShowNewJournalModal(false)
+            loadMemos()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function toLocalInputWithSeconds(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function NewJournalModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { tags } = useStore()
+  const [content, setContent] = useState('')
+  const [tagId, setTagId] = useState<string>('')
+  const [memoTime, setMemoTime] = useState(toLocalInputWithSeconds(new Date()))
+  const [uploading, setUploading] = useState(false)
+  const [attachments, setAttachments] = useState<{ filename: string; path: string; mimeType: string; size: number }[]>([])
+  const [error, setError] = useState('')
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploading(true)
+    setError('')
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const res = await api.memos.upload(files[i])
+        setAttachments((prev) => [...prev, res])
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const save = async () => {
+    if (!content.trim() && attachments.length === 0) {
+      setError('请输入日记内容或上传图片/视频')
+      return
+    }
+    setError('')
+    try {
+      await api.memos.create({
+        content: content.trim() || '（无文字随记）',
+        tagId: tagId || undefined,
+        createdAt: new Date(memoTime).toISOString(),
+        attachments,
+      })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold">✍️ 新建日记 / 随手记</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">日记时间 (精准到秒)</label>
+          <input
+            type="datetime-local"
+            step="1"
+            value={memoTime}
+            onChange={(e) => setMemoTime(e.target.value)}
+            className="input font-mono text-sm"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">关联标签 (可选)</label>
+          <select value={tagId} onChange={(e) => setTagId(e.target.value)} className="input text-sm">
+            <option value="">独立日记 (不绑定标签)</option>
+            {tags.map((t) => (
+              <option key={t.id} value={t.id}>{t.icon ? `${t.icon} ` : ''}{t.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">日记内容 / 感悟与照片</label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={4}
+            placeholder="写下今天的想法、生活随笔、感悟或日志..."
+            className="input"
+            autoFocus
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">图片 / 视频附件</label>
+          <input
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-50 file:text-brand dark:file:bg-brand-900/40 dark:file:text-brand-300 hover:file:bg-brand-100"
+          />
+          {uploading && <div className="text-xs text-brand mt-1">上传中...</div>}
+        </div>
+
+        {attachments.length > 0 && (
+          <div className="grid grid-cols-3 gap-2 pt-1">
+            {attachments.map((att, idx) => (
+              <div key={idx} className="relative rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-16 flex items-center justify-center">
+                {att.mimeType.startsWith('image/') ? (
+                  <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-sm">🎬 视频</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && <div className="text-xs text-red-500">{error}</div>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
+            取消
+          </button>
+          <button onClick={save} className="px-4 py-2 rounded-lg text-sm bg-brand text-white hover:bg-brand-600 font-medium">
+            保存日记
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
