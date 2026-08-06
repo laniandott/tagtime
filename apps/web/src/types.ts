@@ -65,6 +65,8 @@ export interface Todo {
   categoryId: string | null
   category?: Category | null
   _count?: { timeEntries: number }
+  createdAt: string
+  updatedAt: string
 }
 
 export interface Summary {

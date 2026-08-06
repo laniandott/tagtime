@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import type { Todo } from '../types'
@@ -9,22 +9,53 @@ const PRIORITY = [
   { value: 2, label: '紧急', color: 'text-red-500' },
 ]
 
+type DaysRange = 1 | 7 | 30
+
+function formatDate(d: Date) {
+  return d.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' })
+}
+
+function isWithinDays(dateStr: string, days: DaysRange): boolean {
+  const date = new Date(dateStr)
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - days)
+  return date >= cutoff
+}
+
+function groupByDay(todos: Todo[]): { dateLabel: string; items: Todo[] }[] {
+  const map = new Map<string, Todo[]>()
+  for (const t of todos) {
+    const d = new Date(t.updatedAt || t.createdAt)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(t)
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([key, items]) => ({
+      dateLabel: formatDate(new Date(key + 'T12:00:00')),
+      items,
+    }))
+}
+
 export default function TodosPage() {
   const { tags, categories, running, start } = useStore()
   const [todos, setTodos] = useState<Todo[]>([])
   const [filter, setFilter] = useState<'all' | 'pending' | 'done'>('pending')
   const [filterCat, setFilterCat] = useState('')
+  const [daysRange, setDaysRange] = useState<DaysRange>(30)
   const [showQuickAdd, setShowQuickAdd] = useState(false)
   const [quickTitle, setQuickTitle] = useState('')
   const [editing, setEditing] = useState<Todo | null>(null)
   const [pickingTagFor, setPickingTagFor] = useState<Todo | null>(null)
 
   const load = async () => {
-    const status = filter === 'all' ? undefined : filter
-    setTodos(await api.todos.list({ status }))
+    // Always load all todos so we can split pending/done locally
+    const all = await api.todos.list()
+    setTodos(all)
   }
 
-  useEffect(() => { load() }, [filter])
+  useEffect(() => { load() }, [])
 
   const quickAdd = async () => {
     if (!quickTitle.trim()) return
@@ -44,14 +75,49 @@ export default function TodosPage() {
     load()
   }
 
-  // 从 todo 发起计时：先选择该分类下的具体标签
   const startFromTodo = async (todo: Todo, tagId: string) => {
     await start(tagId, todo.title, todo.id)
     setPickingTagFor(null)
   }
 
+  // ── Category filter: match todo.categoryId ──────────────────────────────
+  const catFiltered = useMemo(() => {
+    if (!filterCat) return todos
+    if (filterCat === 'none') return todos.filter((t) => !t.categoryId)
+    return todos.filter((t) => t.categoryId === filterCat)
+  }, [todos, filterCat])
+
+  // ── Split pending vs done ───────────────────────────────────────────────
+  const pendingTodos = useMemo(
+    () => catFiltered.filter((t) => t.status === 'pending').sort((a, b) => b.priority - a.priority),
+    [catFiltered],
+  )
+  const doneTodos = useMemo(
+    () =>
+      catFiltered
+        .filter((t) => t.status === 'done')
+        .filter((t) => {
+          const dateField = t.updatedAt ?? t.dueDate ?? t.createdAt
+          if (!dateField) return filter === 'all' // always show if no date and in all
+          return isWithinDays(dateField, daysRange)
+        })
+        .sort((a, b) => {
+          const da = new Date(a.updatedAt ?? a.createdAt).getTime()
+          const db = new Date(b.updatedAt ?? b.createdAt).getTime()
+          return db - da
+        }),
+    [catFiltered, daysRange, filter],
+  )
+
+  const doneGroups = useMemo(() => groupByDay(doneTodos), [doneTodos])
+
+  // What to show based on filter
+  const showPending = filter === 'pending' || filter === 'all'
+  const showDone = filter === 'done' || filter === 'all'
+
   return (
     <div className="space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">待办</h1>
         <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="text-sm text-brand hover:underline">
@@ -59,7 +125,7 @@ export default function TodosPage() {
         </button>
       </div>
 
-      {/* 快速添加（仅标题，详细属性用编辑弹窗） */}
+      {/* Quick add */}
       {showQuickAdd && (
         <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4 flex gap-2">
           <input
@@ -76,17 +142,24 @@ export default function TodosPage() {
         </div>
       )}
 
-      {/* 筛选 */}
+      {/* Filter row */}
       <div className="flex items-center gap-2 flex-wrap">
+        {/* Status tabs */}
         {(['pending', 'all', 'done'] as const).map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className={`px-3 py-1 rounded-full text-sm ${filter === f ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+            className={`px-3 py-1 rounded-full text-sm transition-colors ${
+              filter === f
+                ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300'
+                : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
           >
             {f === 'pending' ? '待完成' : f === 'done' ? '已完成' : '全部'}
           </button>
         ))}
+
+        {/* Category filter */}
         <select
           value={filterCat}
           onChange={(e) => setFilterCat(e.target.value)}
@@ -98,81 +171,99 @@ export default function TodosPage() {
           ))}
           <option value="none">未分类</option>
         </select>
-      </div>
 
-      {/* 列表 */}
-      <div className="space-y-2">
-        {(() => {
-          const filtered = todos.filter((t) =>
-            !filterCat ||
-            (filterCat === 'none' ? !t.categoryId : t.categoryId === filterCat)
-          )
-          if (filtered.length === 0) {
-            return <div className="text-center py-10 text-gray-400">暂无待办</div>
-          }
-          return filtered.map((todo) => (
-          <div
-            key={todo.id}
-            className={`flex items-start gap-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-4 py-3 ${todo.status === 'done' ? 'opacity-50' : ''}`}
-          >
-            <button
-              onClick={() => toggle(todo.id)}
-              className={`mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${todo.status === 'done' ? 'bg-brand border-brand text-white' : 'border-gray-300 dark:border-gray-600'}`}
-            >
-              {todo.status === 'done' && '✓'}
-            </button>
-            <div className="flex-1 min-w-0">
-              <div className={`text-sm font-medium ${todo.status === 'done' ? 'line-through' : ''}`}>
-                {todo.priority === 2 && <span className="text-red-500 mr-1">🔴</span>}
-                {todo.priority === 1 && <span className="text-amber-500 mr-1">🟡</span>}
-                {todo.title}
-              </div>
-              {todo.description && (
-                <div className="text-xs text-gray-400 mt-0.5">{todo.description}</div>
-              )}
-              <div className="flex items-center gap-2 mt-1 flex-wrap">
-                {todo.category && (
-                  <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: todo.category.color + '22', color: todo.category.color }}>
-                    {todo.category.name}
-                  </span>
-                )}
-                {todo._count && todo._count.timeEntries > 0 && (
-                  <span className="text-xs text-gray-400">已记录 {todo._count.timeEntries} 次</span>
-                )}
-                {todo.dueDate && (
-                  <span className="text-xs text-gray-400">📅 {new Date(todo.dueDate).toLocaleDateString('zh-CN')}</span>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-col gap-1 items-end">
-              {todo.status === 'pending' && todo.categoryId && (
-                running.some((r) => r.todoId === todo.id) ? (
-                  <span className="text-xs text-green-500">● 计时中</span>
-                ) : (
-                  <button
-                    onClick={() => setPickingTagFor(todo)}
-                    className="text-xs text-brand hover:underline"
-                  >
-                    ▶ 计时
-                  </button>
-                )
-              )}
+        {/* Days range — only show when done items are visible */}
+        {(filter === 'done' || filter === 'all') && (
+          <div className="flex items-center gap-1 ml-auto">
+            <span className="text-xs text-gray-400">已完成：</span>
+            {([1, 7, 30] as DaysRange[]).map((d) => (
               <button
-                onClick={() => setEditing(todo)}
-                className="text-xs text-gray-400 hover:text-brand"
+                key={d}
+                onClick={() => setDaysRange(d)}
+                className={`px-2 py-0.5 rounded-full text-xs transition-colors ${
+                  daysRange === d
+                    ? 'bg-brand text-white'
+                    : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                }`}
               >
-                编辑
+                {d}天
               </button>
-              <button onClick={() => remove(todo.id)} className="text-xs text-gray-300 hover:text-red-500">
-                ✕
-              </button>
-            </div>
+            ))}
           </div>
-        ))
-        })()}
+        )}
       </div>
 
-      {/* 编辑弹窗 */}
+      {/* ── Pending list ─────────────────────────────────────────────── */}
+      {showPending && (
+        <div className="space-y-2">
+          {pendingTodos.length === 0 && filter === 'pending' && (
+            <div className="text-center py-10 text-gray-400">暂无待办 🎉</div>
+          )}
+          {pendingTodos.map((todo) => (
+            <TodoCard
+              key={todo.id}
+              todo={todo}
+              running={running}
+              onToggle={toggle}
+              onEdit={setEditing}
+              onDelete={remove}
+              onPickTag={setPickingTagFor}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ── Done timeline ─────────────────────────────────────────────── */}
+      {showDone && (
+        <div className="mt-2">
+          {doneGroups.length === 0 ? (
+            <div className="text-center py-10 text-gray-400">
+              {daysRange}天内暂无已完成待办
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {/* Timeline section header */}
+              {filter === 'all' && pendingTodos.length > 0 && (
+                <div className="flex items-center gap-2 pt-2">
+                  <div className="flex-1 h-px bg-gray-200 dark:bg-gray-800" />
+                  <span className="text-xs text-gray-400 px-2">已完成时间轴（近{daysRange}天）</span>
+                  <div className="flex-1 h-px bg-gray-200 dark:bg-gray-800" />
+                </div>
+              )}
+              {doneGroups.map(({ dateLabel, items }) => (
+                <div key={dateLabel} className="relative pl-6">
+                  {/* Timeline vertical line */}
+                  <div className="absolute left-2 top-4 bottom-0 w-px bg-gray-200 dark:bg-gray-700" />
+                  {/* Date node */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="absolute left-0 w-4 h-4 rounded-full bg-brand flex items-center justify-center">
+                      <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                    </div>
+                    <span className="text-xs font-semibold text-brand-600 dark:text-brand-400 ml-1">{dateLabel}</span>
+                    <span className="text-xs text-gray-400">（{items.length}项）</span>
+                  </div>
+                  <div className="space-y-2">
+                    {items.map((todo) => (
+                      <TodoCard
+                        key={todo.id}
+                        todo={todo}
+                        running={running}
+                        onToggle={toggle}
+                        onEdit={setEditing}
+                        onDelete={remove}
+                        onPickTag={setPickingTagFor}
+                        isDone
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Edit modal */}
       {editing && (
         <TodoEditModal
           todo={editing}
@@ -182,7 +273,7 @@ export default function TodosPage() {
         />
       )}
 
-      {/* 标签选择器：从待办发起计时时，选择该分类下的具体标签 */}
+      {/* Tag picker modal */}
       {pickingTagFor && (
         <TagPickerModal
           todo={pickingTagFor}
@@ -195,6 +286,90 @@ export default function TodosPage() {
   )
 }
 
+// ── Todo Card ─────────────────────────────────────────────────────────────
+function TodoCard({
+  todo,
+  running,
+  onToggle,
+  onEdit,
+  onDelete,
+  onPickTag,
+  isDone = false,
+}: {
+  todo: Todo
+  running: any[]
+  onToggle: (id: string) => void
+  onEdit: (t: Todo) => void
+  onDelete: (id: string) => void
+  onPickTag: (t: Todo) => void
+  isDone?: boolean
+}) {
+  return (
+    <div
+      className={`flex items-start gap-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 px-4 py-3 transition-opacity ${
+        isDone ? 'opacity-60' : ''
+      }`}
+    >
+      <button
+        onClick={() => onToggle(todo.id)}
+        className={`mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+          todo.status === 'done'
+            ? 'bg-brand border-brand text-white'
+            : 'border-gray-300 dark:border-gray-600 hover:border-brand'
+        }`}
+      >
+        {todo.status === 'done' && <span className="text-[10px]">✓</span>}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div className={`text-sm font-medium ${todo.status === 'done' ? 'line-through text-gray-400' : ''}`}>
+          {todo.priority === 2 && <span className="text-red-500 mr-1">🔴</span>}
+          {todo.priority === 1 && <span className="text-amber-500 mr-1">🟡</span>}
+          {todo.title}
+        </div>
+        {todo.description && (
+          <div className="text-xs text-gray-400 mt-0.5">{todo.description}</div>
+        )}
+        <div className="flex items-center gap-2 mt-1 flex-wrap">
+          {todo.category && (
+            <span
+              className="text-xs px-2 py-0.5 rounded-full"
+              style={{ background: todo.category.color + '22', color: todo.category.color }}
+            >
+              {todo.category.name}
+            </span>
+          )}
+          {todo._count && todo._count.timeEntries > 0 && (
+            <span className="text-xs text-gray-400">已记录 {todo._count.timeEntries} 次</span>
+          )}
+          {todo.dueDate && (
+            <span className="text-xs text-gray-400">
+              📅 {new Date(todo.dueDate).toLocaleDateString('zh-CN')}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-col gap-1 items-end flex-shrink-0">
+        {todo.status === 'pending' && todo.categoryId && (
+          running.some((r) => r.todoId === todo.id) ? (
+            <span className="text-xs text-green-500">● 计时中</span>
+          ) : (
+            <button onClick={() => onPickTag(todo)} className="text-xs text-brand hover:underline">
+              ▶ 计时
+            </button>
+          )
+        )}
+        <button onClick={() => onEdit(todo)} className="text-xs text-gray-400 hover:text-brand">
+          编辑
+        </button>
+        <button onClick={() => onDelete(todo.id)} className="text-xs text-gray-300 hover:text-red-500">
+          ✕
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Edit Modal ────────────────────────────────────────────────────────────
 function TodoEditModal({ todo, categories, onClose, onSaved }: {
   todo: Todo
   categories: { id: string; name: string; color: string }[]
@@ -244,7 +419,11 @@ function TodoEditModal({ todo, categories, onClose, onSaved }: {
                   <button
                     key={p.value}
                     onClick={() => setPriority(p.value)}
-                    className={`px-3 py-1 rounded-full text-xs border ${priority === p.value ? `${p.color} border-current font-medium` : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+                    className={`px-3 py-1 rounded-full text-xs border ${
+                      priority === p.value
+                        ? `${p.color} border-current font-medium`
+                        : 'text-gray-400 border-gray-300 dark:border-gray-700'
+                    }`}
                   >
                     {p.label}
                   </button>
@@ -256,13 +435,17 @@ function TodoEditModal({ todo, categories, onClose, onSaved }: {
               <div className="flex gap-2">
                 <button
                   onClick={() => setStatus('pending')}
-                  className={`px-3 py-1 rounded-full text-xs border ${status === 'pending' ? 'text-brand border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+                  className={`px-3 py-1 rounded-full text-xs border ${
+                    status === 'pending' ? 'text-brand border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'
+                  }`}
                 >
                   待完成
                 </button>
                 <button
                   onClick={() => setStatus('done')}
-                  className={`px-3 py-1 rounded-full text-xs border ${status === 'done' ? 'text-green-500 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+                  className={`px-3 py-1 rounded-full text-xs border ${
+                    status === 'done' ? 'text-green-500 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'
+                  }`}
                 >
                   已完成
                 </button>
@@ -298,7 +481,7 @@ function TodoEditModal({ todo, categories, onClose, onSaved }: {
   )
 }
 
-// 标签选择器：从待办发起计时时，选择该分类下的具体标签
+// ── Tag Picker Modal ──────────────────────────────────────────────────────
 function TagPickerModal({ todo, tags, onClose, onPick }: {
   todo: Todo
   tags: { id: string; name: string; color: string }[]
