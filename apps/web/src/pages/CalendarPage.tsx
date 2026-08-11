@@ -3,6 +3,7 @@ import { api, resolveUploadUrl } from '../api'
 import { formatDuration, useStore } from '../store'
 import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
+import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 
 // ===== 日期工具函数 =====
 
@@ -1008,13 +1009,7 @@ function NewJournalModal({
 
         <div>
           <label className="block text-xs font-semibold text-gray-500 mb-1">日记时间 (精准到秒)</label>
-          <input
-            type="datetime-local"
-            step="1"
-            value={memoTime}
-            onChange={(e) => setMemoTime(e.target.value)}
-            className="input font-mono text-sm"
-          />
+          <DateTimeSecondPicker value={memoTime} onChange={setMemoTime} />
         </div>
 
         <div>

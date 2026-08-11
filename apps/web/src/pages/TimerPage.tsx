@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useStore, formatClock, formatDuration } from '../store'
 import { api, resolveUploadUrl } from '../api'
 import type { TimeEntry, Tag, Memo } from '../types'
+import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 
 // 辅助函数：格式化时间为 YYYY/MM/DD HH:mm:ss
 const formatDateTimeWithSeconds = (isoStr: string) => {
@@ -29,6 +30,8 @@ const toLocalInputWithSeconds = (d: Date | string) => {
   const date = typeof d === 'string' ? new Date(d) : d
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19)
 }
+
+
 
 export default function TimerPage() {
   const { tags, categories, running, clockOffset, start, stop, stopAll, quickCount } = useStore()
@@ -876,13 +879,7 @@ export function PointRecordModal({
       <div className="space-y-4">
         <div>
           <label className="block text-sm text-gray-500 mb-1">打点时刻 (精准到秒)</label>
-          <input
-            type="datetime-local"
-            step="1"
-            value={pointTime}
-            onChange={(e) => setPointTime(e.target.value)}
-            className="input font-mono text-sm"
-          />
+          <DateTimeSecondPicker value={pointTime} onChange={setPointTime} />
         </div>
 
         <div>
@@ -1043,24 +1040,11 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm text-gray-500 mb-1">开始时间 (带秒)</label>
-            <input
-              type="datetime-local"
-              step="1"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="input font-mono text-sm"
-            />
+            <DateTimeSecondPicker value={startTime} onChange={setStartTime} />
           </div>
           <div>
             <label className="block text-sm text-gray-500 mb-1">结束时间 (带秒)</label>
-            <input
-              type="datetime-local"
-              step="1"
-              value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-              placeholder={entry.endTime ? '' : '空表示进行中'}
-              className="input font-mono text-sm"
-            />
+            <DateTimeSecondPicker value={endTime} onChange={setEndTime} />
           </div>
         </div>
         <div>
@@ -1160,13 +1144,7 @@ export function MemoCreateModal({
       <div className="space-y-4">
         <div>
           <label className="block text-sm text-gray-500 mb-1">记事时间 (精准到秒)</label>
-          <input
-            type="datetime-local"
-            step="1"
-            value={memoTime}
-            onChange={(e) => setMemoTime(e.target.value)}
-            className="input font-mono text-sm"
-          />
+          <DateTimeSecondPicker value={memoTime} onChange={setMemoTime} />
         </div>
 
         <div>
@@ -1289,13 +1267,7 @@ export function MemoEditModal({
       <div className="space-y-4">
         <div>
           <label className="block text-sm text-gray-500 mb-1">记事时间 (精准到秒)</label>
-          <input
-            type="datetime-local"
-            step="1"
-            value={memoTime}
-            onChange={(e) => setMemoTime(e.target.value)}
-            className="input font-mono text-sm"
-          />
+          <DateTimeSecondPicker value={memoTime} onChange={setMemoTime} />
         </div>
 
         <div>
