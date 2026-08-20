@@ -7,7 +7,7 @@ function formatIcsUtcDate(d: Date | string): string {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
 }
 
-// 辅助函数：将 Date 格式化为 Asia/Shanghai 本地时间 (用于 DTSTART/DTEND: YYYYMMDDTHHMMSS)
+// 辅助函数：将 Date 格式化为 Asia/Shanghai 本地时间 (YYYYMMDDTHHMMSS)
 function formatIcsLocalDate(d: Date | string): string {
   const date = typeof d === 'string' ? new Date(d) : d
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -28,7 +28,7 @@ function formatIcsLocalDate(d: Date | string): string {
   return `${map.year}${map.month}${map.day}T${map.hour}${map.minute}${map.second}`
 }
 
-// 辅助函数：根据 Hex 颜色智能映射为彩色圆点 Emoji (用于不支持自定义块颜色的日历客户端)
+// 辅助函数：根据 Hex 颜色智能映射为彩色圆点 Emoji
 function getColoredCircle(hex?: string): string {
   if (!hex || !hex.startsWith('#')) return '🏷️'
   const r = parseInt(hex.slice(1, 3), 16) || 0
@@ -64,11 +64,12 @@ function escapeIcsText(text: string): string {
 export default async function calendarRoutes(app: FastifyInstance) {
   // 生成 iCalendar (.ics) 日历订阅源与下载
   app.get('/feed.ics', async (req, reply) => {
-    const { days, categoryId, tagId, all } = req.query as {
+    const { days, categoryId, tagId, all, tz } = req.query as {
       days?: string
       categoryId?: string
       tagId?: string
       all?: string
+      tz?: string
     }
 
     const where: Record<string, unknown> = {
@@ -109,6 +110,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
     })
 
     const nowStr = formatIcsUtcDate(new Date())
+    const useExplicitTz = tz === 'shanghai' || tz === 'cst'
 
     const lines: string[] = [
       'BEGIN:VCALENDAR',
@@ -121,17 +123,22 @@ export default async function calendarRoutes(app: FastifyInstance) {
       'X-WR-CALDESC:TagTime 时间记录与活动同步',
       'REFRESH-INTERVAL;VALUE=DURATION:PT1H',
       'X-PUBLISHED-TTL:PT1H',
-      'BEGIN:VTIMEZONE',
-      'TZID:Asia/Shanghai',
-      'X-LIC-LOCATION:Asia/Shanghai',
-      'BEGIN:STANDARD',
-      'TZOFFSETFROM:+0800',
-      'TZOFFSETTO:+0800',
-      'TZNAME:CST',
-      'DTSTART:19700101T000000',
-      'END:STANDARD',
-      'END:VTIMEZONE',
     ]
+
+    if (useExplicitTz) {
+      lines.push(
+        'BEGIN:VTIMEZONE',
+        'TZID:Asia/Shanghai',
+        'X-LIC-LOCATION:Asia/Shanghai',
+        'BEGIN:STANDARD',
+        'TZOFFSETFROM:+0800',
+        'TZOFFSETTO:+0800',
+        'TZNAME:CST',
+        'DTSTART:19700101T000000',
+        'END:STANDARD',
+        'END:VTIMEZONE',
+      )
+    }
 
     for (const entry of entries) {
       if (!entry.endTime) continue
@@ -174,23 +181,30 @@ export default async function calendarRoutes(app: FastifyInstance) {
       }
 
       const description = descLines.join('\n')
+      const localStart = formatIcsLocalDate(entry.startTime)
+      const localEnd = formatIcsLocalDate(entry.endTime)
 
       lines.push('BEGIN:VEVENT')
       lines.push(`UID:timeentry-${entry.id}@tagtime`)
       lines.push(`DTSTAMP:${nowStr}`)
-      lines.push(`DTSTART;TZID=Asia/Shanghai:${formatIcsLocalDate(entry.startTime)}`)
-      lines.push(`DTEND;TZID=Asia/Shanghai:${formatIcsLocalDate(entry.endTime)}`)
+
+      // 默认使用 RFC 5545 浮动本地时间，不受 Google/客户端账号异地时区偏移影响
+      if (useExplicitTz) {
+        lines.push(`DTSTART;TZID=Asia/Shanghai:${localStart}`)
+        lines.push(`DTEND;TZID=Asia/Shanghai:${localEnd}`)
+      } else {
+        lines.push(`DTSTART:${localStart}`)
+        lines.push(`DTEND:${localEnd}`)
+      }
+
       lines.push(`SUMMARY:${escapeIcsText(summary)}`)
       lines.push(`DESCRIPTION:${escapeIcsText(description)}`)
       lines.push(`CATEGORIES:${escapeIcsText(catName || 'TagTime')}`)
       lines.push('STATUS:CONFIRMED')
       if (tagColor) {
-        // RFC 7986 标准颜色属性
         lines.push(`COLOR:${tagColor}`)
-        // Apple Calendar 色彩属性
         lines.push(`X-APPLE-CALENDAR-COLOR:${tagColor}`)
         lines.push(`APPLE-COLOR:${tagColor}`)
-        // Mozilla / Outlook / 通用扩展
         lines.push(`X-COLOR:${tagColor}`)
         lines.push(`X-MOZ-COLOR:${tagColor}`)
         lines.push(`X-OUTLOOK-COLOR:${tagColor}`)
