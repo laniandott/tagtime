@@ -14,6 +14,7 @@ import todoRoutes from './routes/todos.js'
 import statsRoutes from './routes/stats.js'
 import goalRoutes from './routes/goals.js'
 import memoRoutes, { UPLOAD_DIR } from './routes/memos.js'
+import calendarRoutes from './routes/calendar.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +42,7 @@ await app.register(todoRoutes, { prefix: '/api/todos' })
 await app.register(statsRoutes, { prefix: '/api/stats' })
 await app.register(goalRoutes, { prefix: '/api/goals' })
 await app.register(memoRoutes, { prefix: '/api/memos' })
+await app.register(calendarRoutes, { prefix: '/api/calendar' })
 
 // Serve built frontend (production)
 const webDist = join(__dirname, '..', '..', 'web', 'dist')

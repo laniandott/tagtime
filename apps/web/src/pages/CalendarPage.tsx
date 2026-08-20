@@ -4,6 +4,7 @@ import { formatDuration, useStore } from '../store'
 import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
+import { CalendarSyncModal } from '../components/CalendarSyncModal'
 
 // ===== 日期工具函数 =====
 
@@ -165,6 +166,7 @@ export default function CalendarPage() {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [entries, setEntries] = useState<TimeEntry[]>([])
   const [selectedEntry, setSelectedEntry] = useState<TimeEntry | null>(null)
+  const [showSyncModal, setShowSyncModal] = useState(false)
   const [now, setNow] = useState(new Date())
 
   // 每分钟更新当前时间（用于"现在"指示线）
@@ -312,6 +314,15 @@ export default function CalendarPage() {
               </button>
             ))}
           </div>
+
+          <button
+            onClick={() => setShowSyncModal(true)}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-800 text-xs font-medium text-gray-700 dark:text-gray-200 flex items-center gap-1.5 transition shadow-xs"
+            title="将活动同步至手机或电脑系统日历 (iCalendar / WebCal)"
+          >
+            <span>🗓️</span>
+            <span className="hidden sm:inline">日历同步</span>
+          </button>
         </div>
       </div>
 
@@ -336,6 +347,9 @@ export default function CalendarPage() {
 
       {/* 条目详情弹窗 */}
       {selectedEntry && <EntryDetail entry={selectedEntry} onClose={() => setSelectedEntry(null)} />}
+
+      {/* 日历同步弹窗 */}
+      {showSyncModal && <CalendarSyncModal onClose={() => setShowSyncModal(false)} />}
 
       {/* 沉浸式动态时间线 (Memos & 多媒体) */}
       <TimelineSection />
@@ -976,6 +990,7 @@ function NewJournalModal({
       setError((err as Error).message)
     } finally {
       setUploading(false)
+      e.target.value = ''
     }
   }
 

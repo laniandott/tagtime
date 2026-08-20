@@ -183,14 +183,22 @@ export const api = {
     upload: async (file: File) => {
       const host = getServerHost()
       const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`${host}/api/memos/upload`, {
-        method: 'POST',
-        body: form,
-      })
+      form.append('file', file, file.name || 'upload.bin')
+      const request = (url: string) => fetch(url, { method: 'POST', body: form })
+      let res: Response
+      try {
+        res = await request(`${host}/api/memos/upload`)
+      } catch (firstError) {
+        // HTTPS pages cannot call a stale HTTP server URL; retry through same origin.
+        if (typeof window !== 'undefined' && window.location.protocol === 'https:' && host) {
+          res = await request('/api/memos/upload')
+        } else {
+          throw firstError
+        }
+      }
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: '上传失败' }))
-        throw new Error(err.error ?? '上传文件失败')
+        const err = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }))
+        throw new Error(err.error ?? `上传文件失败 (${res.status})`)
       }
       return res.json() as Promise<{ filename: string; path: string; mimeType: string; size: number }>
     },

@@ -1,6 +1,37 @@
 import type { FastifyInstance } from 'fastify'
 import { join, resolve } from 'node:path'
-import { mkdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
+import { createWriteStream, mkdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
+
+function getExtension(filename: string, mimetype: string): string {
+  if (filename && filename.includes('.')) {
+    const ext = filename.split('.').pop()?.toLowerCase()
+    if (ext && ext.length <= 5 && /^[a-z0-9]+$/.test(ext)) {
+      return ext
+    }
+  }
+  const mimeMap: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/heic': 'heic',
+    'image/heif': 'heif',
+    'image/bmp': 'bmp',
+    'image/svg+xml': 'svg',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/webm': 'webm',
+    'video/x-msvideo': 'avi',
+    'video/mpeg': 'mpg',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/m4a': 'm4a',
+    'audio/ogg': 'ogg',
+  }
+  return mimeMap[(mimetype || '').toLowerCase()] || 'bin'
+}
+
 import { randomUUID } from 'node:crypto'
 import prisma from '../db.js'
 
@@ -113,26 +144,43 @@ export default async function memoRoutes(app: FastifyInstance) {
 
   // 3. 上传图片或视频接口
   app.post('/upload', async (req, reply) => {
-    const data = await req.file()
-    if (!data) {
-      reply.code(400)
-      return { error: '未检测到上传文件' }
-    }
+    try {
+      const data = await req.file()
+      if (!data) {
+        reply.code(400)
+        return { error: '未检测到上传文件' }
+      }
 
-    const ext = data.filename.split('.').pop() ?? 'bin'
-    const fileName = `${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`
-    const filePath = join(UPLOAD_DIR, fileName)
+      const ext = getExtension(data.filename, data.mimetype)
+      const fileName = `${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`
+      const filePath = join(UPLOAD_DIR, fileName)
 
-    const buffer = await data.toBuffer()
-    writeFileSync(filePath, buffer)
+      const writeStream = createWriteStream(filePath)
+      let size = 0
 
-    return {
-      filename: data.filename,
-      path: `/uploads/${fileName}`,
-      mimeType: data.mimetype,
-      size: buffer.length,
+      await new Promise<void>((res, rej) => {
+        data.file.on('data', (chunk) => {
+          size += chunk.length
+        })
+        data.file.pipe(writeStream)
+        writeStream.on('finish', () => res())
+        writeStream.on('error', (err) => rej(err))
+        data.file.on('error', (err) => rej(err))
+      })
+
+      return {
+        filename: data.filename || `file.${ext}`,
+        path: `/uploads/${fileName}`,
+        mimeType: data.mimetype,
+        size,
+      }
+    } catch (err: any) {
+      req.log.error(err)
+      reply.code(500)
+      return { error: err.message || '上传文件失败' }
     }
   })
+
 
   // 4. 编辑 Memo（内容、时间、附件增删）
   app.put('/:id', async (req, reply) => {

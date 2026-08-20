@@ -286,20 +286,20 @@ export default function TimerPage() {
               <span className="text-xs font-normal text-gray-400">（按结束时间倒序）</span>
             </h2>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex w-full items-center gap-2 flex-wrap sm:w-auto">
             {/* 搜索框 */}
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="搜索标题/备注/打点…"
-                className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-36 focus:w-48 transition-all focus:outline-none focus:border-brand"
+                className="w-full text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 sm:w-36 sm:focus:w-48 transition-all focus:outline-none focus:border-brand"
               />
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
             </div>
             {/* 日期范围快捷选项 */}
-            <div className="flex gap-1">
+            <div className="flex max-w-full gap-1 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
               {([
                 { key: 'today', label: '今天' },
                 { key: 'yesterday', label: '昨天' },
@@ -310,7 +310,7 @@ export default function TimerPage() {
                 <button
                   key={r.key}
                   onClick={() => setDateRange(r.key)}
-                  className={`px-2 py-1 rounded-full text-xs ${dateRange === r.key ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                  className={`shrink-0 px-2 py-1 rounded-full text-xs ${dateRange === r.key ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
                 >
                   {r.label}
                 </button>
@@ -568,8 +568,8 @@ function TimelineEntryItem({
       {/* 时间线主体卡片 */}
       <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200/80 dark:border-gray-800 p-4 shadow-sm hover:shadow-md transition-all">
         {/* 卡片头部信息 */}
-        <div className="flex items-start justify-between gap-3 min-w-0">
-          <div className="min-w-0">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">
                 {entry.tag?.icon ? `${entry.tag.icon} ` : ''}{entry.tag?.name}
@@ -635,7 +635,7 @@ function TimelineEntryItem({
           </div>
 
           {/* 右侧时长与操作按钮：点记录 / 记日记 / 编辑 / 删除 */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-shrink-0 sm:justify-end">
             <span className="text-sm font-mono font-semibold text-brand bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 rounded-lg">
               {entry.endTime
                 ? formatDuration(new Date(entry.endTime).getTime() - new Date(entry.startTime).getTime())
@@ -1115,6 +1115,7 @@ export function MemoCreateModal({
       setError((err as Error).message)
     } finally {
       setUploading(false)
+      e.target.value = ''
     }
   }
 
@@ -1241,6 +1242,7 @@ export function MemoEditModal({
       setError((err as Error).message)
     } finally {
       setUploading(false)
+      e.target.value = ''
     }
   }
 
