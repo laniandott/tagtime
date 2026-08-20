@@ -28,6 +28,29 @@ function formatIcsLocalDate(d: Date | string): string {
   return `${map.year}${map.month}${map.day}T${map.hour}${map.minute}${map.second}`
 }
 
+// 辅助函数：根据 Hex 颜色智能映射为彩色圆点 Emoji (用于不支持自定义块颜色的日历客户端)
+function getColoredCircle(hex?: string): string {
+  if (!hex || !hex.startsWith('#')) return '🏷️'
+  const r = parseInt(hex.slice(1, 3), 16) || 0
+  const g = parseInt(hex.slice(3, 5), 16) || 0
+  const b = parseInt(hex.slice(5, 7), 16) || 0
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const d = max - min
+  if (d < 30) return max > 180 ? '⚪' : '🔘'
+  let h = 0
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60
+  else if (max === g) h = ((b - r) / d + 2) * 60
+  else h = ((r - g) / d + 4) * 60
+  if (h >= 345 || h < 18) return '🔴'
+  if (h >= 18 && h < 45) return '🟠'
+  if (h >= 45 && h < 75) return '🟡'
+  if (h >= 75 && h < 165) return '🟢'
+  if (h >= 165 && h < 260) return '🔵'
+  if (h >= 260 && h < 345) return '🟣'
+  return '🔵'
+}
+
 // 辅助函数：转义 iCalendar 文本字段中的特殊字符 (\, ;, ,, 换行)
 function escapeIcsText(text: string): string {
   if (!text) return ''
@@ -114,10 +137,11 @@ export default async function calendarRoutes(app: FastifyInstance) {
       if (!entry.endTime) continue
 
       const catName = entry.tag.category?.name
-      const tagIcon = entry.tag.icon ? `${entry.tag.icon} ` : ''
+      const tagColor = entry.tag.color || entry.tag.category?.color
+      const colorIndicator = entry.tag.icon || getColoredCircle(tagColor)
       const summaryParts = []
       if (catName) summaryParts.push(`[${catName}]`)
-      summaryParts.push(`${tagIcon}${entry.tag.name}`)
+      summaryParts.push(`${colorIndicator} ${entry.tag.name}`)
       if (entry.note) summaryParts.push(`- ${entry.note}`)
       const summary = summaryParts.join(' ')
 
@@ -160,8 +184,16 @@ export default async function calendarRoutes(app: FastifyInstance) {
       lines.push(`DESCRIPTION:${escapeIcsText(description)}`)
       lines.push(`CATEGORIES:${escapeIcsText(catName || 'TagTime')}`)
       lines.push('STATUS:CONFIRMED')
-      if (entry.tag.color) {
-        lines.push(`X-APPLE-CALENDAR-COLOR:${entry.tag.color}`)
+      if (tagColor) {
+        // RFC 7986 标准颜色属性
+        lines.push(`COLOR:${tagColor}`)
+        // Apple Calendar 色彩属性
+        lines.push(`X-APPLE-CALENDAR-COLOR:${tagColor}`)
+        lines.push(`APPLE-COLOR:${tagColor}`)
+        // Mozilla / Outlook / 通用扩展
+        lines.push(`X-COLOR:${tagColor}`)
+        lines.push(`X-MOZ-COLOR:${tagColor}`)
+        lines.push(`X-OUTLOOK-COLOR:${tagColor}`)
       }
       lines.push('END:VEVENT')
     }
