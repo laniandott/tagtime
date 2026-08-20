@@ -6,6 +6,7 @@ export function CalendarSyncModal({ onClose }: { onClose: () => void }) {
   const { categories } = useStore()
   const [days, setDays] = useState<'30' | '90' | 'all'>('90')
   const [selectedCat, setSelectedCat] = useState<string>('')
+  const [version, setVersion] = useState<number>(Date.now())
   const [copiedType, setCopiedType] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'apple' | 'android' | 'google' | 'outlook'>('apple')
 
@@ -30,6 +31,8 @@ export function CalendarSyncModal({ onClose }: { onClose: () => void }) {
     if (selectedCat) {
       params.set('categoryId', selectedCat)
     }
+    // 附带版本时间戳，防止 Google 日历等平台缓存旧文件
+    params.set('v', String(version))
     const q = params.toString()
     return q ? `?${q}` : ''
   }
