@@ -110,7 +110,10 @@ export default async function calendarRoutes(app: FastifyInstance) {
     })
 
     const nowStr = formatIcsUtcDate(new Date())
-    const useExplicitTz = tz === 'shanghai' || tz === 'cst'
+    // Always include an explicit timezone. Floating DTSTART values are parsed
+    // inconsistently by Google Calendar subscriptions and can shift by hours.
+    // Keep `tz=floating` as an opt-out for legacy clients only.
+    const useExplicitTz = tz !== 'floating'
 
     const lines: string[] = [
       'BEGIN:VCALENDAR',
