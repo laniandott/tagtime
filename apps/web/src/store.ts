@@ -149,6 +149,12 @@ export const useStore = create<AppState>((set, get) => ({
   },
 }))
 
+// 安全转 ISO 字符串（无效输入返回 null，避免 toISOString 抛 RangeError 白屏）
+export function toIsoSafe(v: string): string | null {
+  const t = new Date(v)
+  return isNaN(t.getTime()) ? null : t.toISOString()
+}
+
 // 格式化时长（毫秒 -> "1h 23m" / "23m 5s" / "5s"）
 export function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000)

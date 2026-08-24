@@ -411,7 +411,7 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
   onSaved: () => void
 }) {
   const [title, setTitle] = useState(goal?.title ?? `每日${tag.name}`)
-  const [type, setType] = useState<'count' | 'time'>(goal?.type ?? (tag.trackType === 'count' ? 'count' : 'count'))
+  const [type, setType] = useState<'count' | 'time'>(goal?.type ?? (tag.trackType === 'count' ? 'count' : 'time'))
   const [target, setTarget] = useState(goal?.target ?? 1)
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>(goal?.period ?? 'daily')
   const [periodDays, setPeriodDays] = useState(goal?.periodDays ?? 7)
@@ -485,7 +485,9 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
 }
 
 function SystemSettingsSection() {
-  const [serverUrl, setServerUrlState] = useState(() => getServerHost() || 'http://812264226.xyz:3000')
+  const [serverUrl, setServerUrlState] = useState(
+    () => getServerHost() || (typeof window !== 'undefined' ? window.location.origin : '')
+  )
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success?: boolean; message?: string } | null>(null)
   const [cacheMessage, setCacheMessage] = useState<string | null>(null)

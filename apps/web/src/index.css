@@ -25,3 +25,12 @@ body {
 ::-webkit-scrollbar-thumb {
   @apply bg-gray-300 dark:bg-gray-700 rounded-full;
 }
+
+/* 全屏常显时钟激活时：隐藏页头、锁定滚动、纯黑背景，避免状态栏区域透出页面内容 */
+body.fullscreen-clock-active {
+  overflow: hidden;
+  background: #000;
+}
+body.fullscreen-clock-active header {
+  display: none;
+}

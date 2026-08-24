@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { api, resolveUploadUrl } from '../api'
-import { formatDuration, useStore } from '../store'
+import { formatDuration, useStore, toIsoSafe } from '../store'
 import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
@@ -982,10 +982,8 @@ function NewJournalModal({
     setUploading(true)
     setError('')
     try {
-      for (let i = 0; i < files.length; i++) {
-        const res = await api.memos.upload(files[i])
-        setAttachments((prev) => [...prev, res])
-      }
+      const results = await Promise.all(Array.from(files).map((f) => api.memos.upload(f)))
+      setAttachments((prev) => [...prev, ...results])
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -999,13 +997,18 @@ function NewJournalModal({
       setError('请输入日记内容或上传图片/视频')
       return
     }
+    const memoIso = toIsoSafe(memoTime)
+    if (!memoIso) {
+      setError('请选择有效的日记时间')
+      return
+    }
     setError('')
     try {
       await api.memos.create({
         content: content.trim() || '（无文字随记）',
         type: 'diary',
         tagId: tagId || undefined,
-        createdAt: new Date(memoTime).toISOString(),
+        createdAt: memoIso,
         attachments,
       })
       onSaved()

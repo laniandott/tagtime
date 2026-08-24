@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { useStore, formatClock, formatDuration } from '../store'
+import { useStore, formatClock, formatDuration, toIsoSafe } from '../store'
 import { api, resolveUploadUrl } from '../api'
 import type { TimeEntry, Tag, Memo } from '../types'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
@@ -34,8 +34,7 @@ const toLocalInputWithSeconds = (d: Date | string) => {
 
 
 export default function TimerPage() {
-  const { tags, categories, running, clockOffset, start, stop, stopAll, quickCount } = useStore()
-  const [now, setNow] = useState(Date.now())
+  const { tags, categories, running, start, stop, stopAll, quickCount } = useStore()
   const [recent, setRecent] = useState<TimeEntry[]>([])
   const [stoppingId, setStoppingId] = useState<string | null>(null)
   const [stoppingAll, setStoppingAll] = useState(false)
@@ -43,20 +42,13 @@ export default function TimerPage() {
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null)
   const [memoTargetEntry, setMemoTargetEntry] = useState<TimeEntry | null>(null)
   const [pointTargetEntry, setPointTargetEntry] = useState<TimeEntry | null>(null)
+  const [showFullscreen, setShowFullscreen] = useState(false)
   const [filterCat, setFilterCat] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   // 最近记录日期范围：默认显示当天
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7days' | '30days' | 'custom'>('today')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-
-  // 每秒刷新计时显示（有进行中的计时时）
-  useEffect(() => {
-    if (running.length === 0) return
-    setNow(Date.now())
-    const t = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [running.length])
 
   // 加载最近记录（按日期范围筛选）
   const loadRecent = async () => {
@@ -94,10 +86,6 @@ export default function TimerPage() {
   useEffect(() => {
     loadRecent()
   }, [running.length, dateRange, customFrom, customTo])
-
-  // 计算某条计时的已用时长（用 clockOffset 修正容器时钟偏差）
-  const elapsedOf = (entry: TimeEntry) =>
-    (now - clockOffset) - new Date(entry.startTime).getTime()
 
   const handleStart = async (tagId: string) => {
     const tag = tags.find((t) => t.id === tagId)
@@ -152,7 +140,7 @@ export default function TimerPage() {
   const uncategorized = tags.filter((t) => !t.categoryId)
 
   // 按结束时间倒序排序（进行中的在最上方，即 endTime 为 null 当作无穷大，已结束的按 endTime 倒序）
-  const sortedRecent = [...recent]
+  const sortedRecent = useMemo(() => [...recent]
     .filter((e) => {
       if (filterCat && !(filterCat === 'none' ? !e.tag?.categoryId : e.tag?.categoryId === filterCat)) return false
       if (searchQuery) {
@@ -169,30 +157,46 @@ export default function TimerPage() {
       const timeB = b.endTime ? new Date(b.endTime).getTime() : Number.MAX_SAFE_INTEGER
       if (timeA !== timeB) return timeB - timeA
       return new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
-    })
+    }), [recent, filterCat, searchQuery])
 
   return (
     <div className="space-y-6">
       {/* 进行中的计时卡片 */}
       {running.length > 0 ? (
         <div className="space-y-3">
-          {running.length > 1 && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500">{running.length} 个计时进行中</span>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <span className="text-sm text-gray-500">
+              {running.length > 1 ? `${running.length} 个计时进行中` : '正在计时'}
+            </span>
+            <div className="flex items-center gap-3">
               <button
-                onClick={handleStopAll}
-                disabled={stoppingAll}
-                className="text-sm text-red-500 hover:underline disabled:opacity-50"
+                onClick={() => {
+                  const c = (window as any).Capacitor
+                  if (!c?.isNativePlatform?.()) {
+                    document.documentElement.requestFullscreen?.().catch(() => { /* noop */ })
+                  }
+                  setShowFullscreen(true)
+                }}
+                className="text-sm text-brand hover:underline"
+                title="全屏常显：持续时长 + 当前时间 + 当前任务，屏幕不熄灭"
               >
-                {stoppingAll ? '停止中…' : '全部停止'}
+                ⛶ 全屏常显
               </button>
+              {running.length > 1 && (
+                <button
+                  onClick={handleStopAll}
+                  disabled={stoppingAll}
+                  className="text-sm text-red-500 hover:underline disabled:opacity-50"
+                >
+                  {stoppingAll ? '停止中…' : '全部停止'}
+                </button>
+              )}
             </div>
-          )}
+          </div>
           {running.map((entry) => (
             <RunningTimer
               key={entry.id}
               entry={entry}
-              elapsed={elapsedOf(entry)}
               stopping={stoppingId === entry.id}
               onStop={(note) => handleStop(entry.id, note)}
               onAddMemo={() => setMemoTargetEntry(entry)}
@@ -426,21 +430,221 @@ export default function TimerPage() {
           }}
         />
       )}
+
+      {/* 全屏常显时钟 */}
+      {showFullscreen && <FullscreenClockOverlay onClose={() => setShowFullscreen(false)} />}
     </div>
   )
 }
 
-// 进行中计时卡片
-function RunningTimer({ entry, elapsed, stopping, onStop, onAddMemo, onAddPointRecord }: {
+// ===== 全屏常显时钟（手机端：持续时长 + 当前任务 + 当前时间，屏幕不熄灭）=====
+function FullscreenClockOverlay({ onClose }: { onClose: () => void }) {
+  const running = useStore((s) => s.running)
+  const clockOffset = useStore((s) => s.clockOffset)
+  const [now, setNow] = useState(Date.now())
+  const [wakeLocked, setWakeLocked] = useState(false)
+  const [isPortrait, setIsPortrait] = useState(
+    typeof window !== 'undefined' ? window.matchMedia('(orientation: portrait)').matches : true
+  )
+
+  // 监听横竖屏切换，动态调整布局
+  useEffect(() => {
+    const mq = window.matchMedia('(orientation: portrait)')
+    const onChange = (e: MediaQueryListEvent) => setIsPortrait(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  // 每秒刷新
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  // 屏幕常亮：Wake Lock，切后台回来自动重新获取
+  useEffect(() => {
+    let sentinel: any = null
+    let cancelled = false
+    const acquire = async () => {
+      try {
+        const wl = (navigator as any).wakeLock
+        if (!wl) return
+        sentinel = await wl.request('screen')
+        setWakeLocked(true)
+        sentinel?.addEventListener?.('release', () => setWakeLocked(false))
+      } catch {
+        /* 权限被拒或环境不支持时静默降级 */
+      }
+    }
+    acquire()
+    const onVisible = () => {
+      if (!cancelled && document.visibilityState === 'visible') acquire()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      try { sentinel?.release?.() } catch { /* noop */ }
+    }
+  }, [])
+
+  // 进入全屏，退出时恢复
+  // 浏览器的 requestFullscreen 已在按钮点击手势中同步调用（此处不再重复）
+  // 原生端隐藏系统状态栏；同时隐藏页头并锁定 body（见 index.css fullscreen-clock-active）
+  useEffect(() => {
+    const Capacitor = (window as any).Capacitor
+    const isNative = Boolean(Capacitor?.isNativePlatform?.())
+    document.body.classList.add('fullscreen-clock-active')
+
+    const hideNativeStatusBar = async () => {
+      try {
+        if (!isNative) return
+        const { StatusBar, Style } = await import('@capacitor/status-bar')
+        try { await StatusBar.setOverlaysWebView({ overlay: false }) } catch { /* noop */ }
+        await StatusBar.hide()
+        try { await StatusBar.setStyle({ style: Style.Dark }) } catch { /* noop */ }
+      } catch { /* noop */ }
+    }
+    hideNativeStatusBar()
+
+    return () => {
+      document.body.classList.remove('fullscreen-clock-active')
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => { /* noop */ })
+      if (isNative) {
+        import('@capacitor/status-bar')
+          .then(async ({ StatusBar }) => {
+            await StatusBar.show()
+            window.dispatchEvent(new Event('resize'))
+          })
+          .catch(() => { /* noop */ })
+      }
+    }
+  }, [])
+
+  const wallTime = new Date(now)
+  const count = running.length
+
+  // 布局（方向感知）：竖屏 2个上下堆叠 / 3个上通栏+下左右；横屏 2个左右 / 3个左右+下中；4个均为田字格
+  const gridClass =
+    count === 1 ? 'grid-cols-1 grid-rows-1'
+    : count === 2 ? (isPortrait ? 'grid-cols-1 grid-rows-2' : 'grid-cols-2 grid-rows-1')
+    : count === 3 ? 'grid-cols-2 grid-rows-2'
+    : 'grid-cols-2'
+
+  // 字号随任务数与方向自适应（时钟 8 个等宽字符宽 ≈ 4.8 倍字号，需同时容纳于格子宽度与高度）
+  const clockSize =
+    count === 1 ? 'min(19vw, 50vh)'
+    : count === 2 ? (isPortrait ? 'min(19vw, 22vh)' : 'min(9.5vw, 40vh)')
+    : count === 3 ? (isPortrait ? 'min(9.5vw, 20vh)' : 'min(9.5vw, 28vh)')
+    : count === 4 ? (isPortrait ? 'min(9.5vw, 20vh)' : 'min(9.5vw, 24vh)')
+    : 'min(8.5vw, 16vh)'
+  const nameSize =
+    count === 1 ? 'min(6vw, 5vh)'
+    : count === 2 ? (isPortrait ? 'min(5vw, 3.5vh)' : 'min(4.5vw, 3.5vh)')
+    : count === 3 ? 'min(4vw, 3vh)'
+    : 'min(3.5vw, 2.5vh)'
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-black text-white flex flex-col select-none"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+    >
+      {/* 顶部状态 */}
+      <div className="flex items-center justify-between px-5 pt-4 pb-1 text-sm text-gray-500 shrink-0">
+        <span className="flex items-center gap-2">
+          <span
+            className={`w-2 h-2 rounded-full ${count > 0 ? 'bg-green-500 animate-pulse' : 'bg-gray-600'}`}
+          />
+          {count > 0 ? `${count} 个计时进行中` : '未在计时'}
+          {wakeLocked && <span className="text-xs text-gray-600">· 屏幕常亮</span>}
+        </span>
+        <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none p-2" title="退出全屏">
+          ✕
+        </button>
+      </div>
+
+      {/* 中部：任务网格，每格尽量占满 */}
+      <div className={`flex-1 min-h-0 w-full grid gap-x-2 gap-y-4 px-2 py-2 ${gridClass} ${count > 4 ? 'overflow-y-auto' : ''}`}>
+        {count === 0 ? (
+          <div className="col-span-full flex flex-col items-center justify-center text-gray-500 space-y-3">
+            <div className="text-6xl">⏱</div>
+            <div className="text-lg">未在计时</div>
+            <div className="text-xs text-gray-600">回 App 选择标签开始</div>
+          </div>
+        ) : (
+          running.map((entry, i) => {
+            const elapsed = Math.max(0, (now - clockOffset) - new Date(entry.startTime).getTime())
+            const color = entry.tag?.color ?? '#6d5efc'
+            return (
+              <div
+                key={entry.id}
+                className={`flex flex-col items-center justify-center text-center min-h-0 min-w-0 p-2 ${count === 3 && (isPortrait ? i === 0 : i === 2) ? 'col-span-2' : ''}`}
+              >
+                <div className="flex items-center justify-center gap-2 mb-2 flex-wrap min-w-0">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+                  <span className="font-medium truncate max-w-[46vw]" style={{ color, fontSize: nameSize }}>
+                    {entry.tag?.icon ? `${entry.tag.icon} ` : ''}{entry.tag?.name}
+                  </span>
+                  {entry.tag?.category && count <= 3 && (
+                    <span
+                      className="px-2 py-0.5 rounded-full border shrink-0"
+                      style={{
+                        fontSize: 'min(2.5vw, 2.2vh)',
+                        backgroundColor: `${entry.tag.category.color}22`,
+                        color: entry.tag.category.color,
+                        borderColor: `${entry.tag.category.color}55`,
+                      }}
+                    >
+                      {entry.tag.category.icon ? `${entry.tag.category.icon} ` : ''}
+                      {entry.tag.category.name}
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="font-mono font-bold tabular-nums leading-none"
+                  style={{ color, fontSize: clockSize }}
+                >
+                  {formatClock(elapsed)}
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* 底部：当前时间（保持字号，压缩高度给任务区让空间） */}
+      <div className="shrink-0 text-center pb-5 pt-1">
+        <div className="text-6xl font-mono font-light tabular-nums text-gray-100 leading-tight">
+          {wallTime.toLocaleTimeString('zh-CN', { hour12: false })}
+        </div>
+        <div className="mt-1 text-sm text-gray-500">
+          {wallTime.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 进行中计时卡片（内部自带每秒时钟，避免整页重渲染）
+function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: {
   entry: TimeEntry
-  elapsed: number
   stopping: boolean
   onStop: (note?: string) => void
   onAddMemo: () => void
   onAddPointRecord: () => void
 }) {
+  const clockOffset = useStore((s) => s.clockOffset)
   const [note, setNote] = useState(entry.note ?? '')
   const [noteSaved, setNoteSaved] = useState(false)
+  const [now, setNow] = useState(Date.now())
+
+  useEffect(() => {
+    setNow(Date.now())
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  const elapsed = Math.max(0, (now - clockOffset) - new Date(entry.startTime).getTime())
 
   const saveNote = async () => {
     await api.timer.update(entry.id, { note })
@@ -859,6 +1063,11 @@ export function PointRecordModal({
       setError('请输入点记录内容')
       return
     }
+    const pointIso = toIsoSafe(pointTime)
+    if (!pointIso) {
+      setError('请选择有效的打点时间')
+      return
+    }
     setError('')
     try {
       await api.memos.create({
@@ -866,7 +1075,7 @@ export function PointRecordModal({
         type: 'point',
         timeEntryId: entry.id,
         tagId: entry.tagId,
-        createdAt: new Date(pointTime).toISOString(),
+        createdAt: pointIso,
       })
       onSaved()
     } catch (err) {
@@ -925,11 +1134,21 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
       setError('请选择标签')
       return
     }
+    const startIso = toIsoSafe(startTime)
+    const endIso = toIsoSafe(endTime)
+    if (!startIso || !endIso) {
+      setError('请填写有效的开始/结束时间')
+      return
+    }
+    if (new Date(endIso) <= new Date(startIso)) {
+      setError('结束时间必须晚于开始时间')
+      return
+    }
     try {
       await api.timer.manual({
         tagId,
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date(endTime).toISOString(),
+        startTime: startIso,
+        endTime: endIso,
         note: note || undefined,
       })
       onSaved()
@@ -1007,19 +1226,42 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
   const [note, setNote] = useState(entry.note ?? '')
   const [error, setError] = useState('')
 
+  // 次数型标签的记录 startTime === endTime（零时长打卡），编辑时需同步起止时间
+  // 兼容 tags 尚未加载或标签已删除的情况，回退到 entry 自带的 tag
+  const isCountEntry = (tags.find((t) => t.id === tagId)?.trackType ?? (entry as any).tag?.trackType) === 'count'
+
+  const handleStartChange = (value: string) => {
+    setStartTime(value)
+    if (isCountEntry && endTime) setEndTime(value)
+  }
+
   const save = async () => {
     setError('')
-    if (endTime && new Date(endTime) <= new Date(startTime)) {
+    const startIso = toIsoSafe(startTime)
+    if (!startIso) {
+      setError('请填写有效的开始时间')
+      return
+    }
+    let endIso: string | null = null
+    if (endTime) {
+      endIso = toIsoSafe(endTime)
+      if (!endIso) {
+        setError('请填写有效的结束时间')
+        return
+      }
+    }
+    if (!isCountEntry && endIso && new Date(endIso) <= new Date(startIso)) {
       setError('结束时间必须晚于开始时间')
       return
     }
     try {
       await api.timer.update(entry.id, {
         tagId,
-        startTime: new Date(startTime).toISOString(),
-        endTime: endTime ? new Date(endTime).toISOString() : null,
+        startTime: startIso,
+        endTime: endIso,
         note,
       })
+      useStore.getState().loadRunning()
       onSaved()
     } catch (e) {
       setError((e as Error).message)
@@ -1040,11 +1282,36 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm text-gray-500 mb-1">开始时间 (带秒)</label>
-            <DateTimeSecondPicker value={startTime} onChange={setStartTime} />
+            <DateTimeSecondPicker value={startTime} onChange={handleStartChange} />
           </div>
           <div>
-            <label className="block text-sm text-gray-500 mb-1">结束时间 (带秒)</label>
-            <DateTimeSecondPicker value={endTime} onChange={setEndTime} />
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm text-gray-500">结束时间 (带秒)</label>
+              {endTime && (
+                <button
+                  onClick={() => setEndTime('')}
+                  className="text-xs text-red-500 hover:underline"
+                  title="清除结束时间，保存后该活动将恢复为进行中"
+                >
+                  ✕ 清除
+                </button>
+              )}
+            </div>
+            {endTime ? (
+              <DateTimeSecondPicker value={endTime} onChange={setEndTime} />
+            ) : (
+              <div className="flex items-center justify-between gap-2 h-[42px]">
+                <span className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 px-2.5 py-1.5 rounded-lg">
+                  ● 保存后恢复为进行中
+                </span>
+                <button
+                  onClick={() => setEndTime(toLocalInputWithSeconds(new Date()))}
+                  className="text-xs text-brand hover:underline whitespace-nowrap"
+                >
+                  撤销清除
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div>
@@ -1106,11 +1373,8 @@ export function MemoCreateModal({
     setUploading(true)
     setError('')
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const res = await api.memos.upload(file)
-        setAttachments((prev) => [...prev, res])
-      }
+      const results = await Promise.all(Array.from(files).map((f) => api.memos.upload(f)))
+      setAttachments((prev) => [...prev, ...results])
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -1124,6 +1388,11 @@ export function MemoCreateModal({
       setError('请输入记事内容或上传文件')
       return
     }
+    const memoIso = toIsoSafe(memoTime)
+    if (!memoIso) {
+      setError('请选择有效的记事时间')
+      return
+    }
     setError('')
     try {
       await api.memos.create({
@@ -1131,7 +1400,7 @@ export function MemoCreateModal({
         type: 'diary',
         timeEntryId: entry.id,
         tagId: entry.tagId,
-        createdAt: new Date(memoTime).toISOString(),
+        createdAt: memoIso,
         attachments,
       })
       onSaved()
@@ -1233,11 +1502,8 @@ export function MemoEditModal({
     setUploading(true)
     setError('')
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const res = await api.memos.upload(file)
-        setAttachments((prev) => [...prev, res])
-      }
+      const results = await Promise.all(Array.from(files).map((f) => api.memos.upload(f)))
+      setAttachments((prev) => [...prev, ...results])
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -1251,11 +1517,16 @@ export function MemoEditModal({
       setError('请输入记事内容或上传文件')
       return
     }
+    const memoIso = toIsoSafe(memoTime)
+    if (!memoIso) {
+      setError('请选择有效的记事时间')
+      return
+    }
     setError('')
     try {
       await api.memos.update(memo.id, {
         content: content.trim() || '（无文字附记）',
-        createdAt: new Date(memoTime).toISOString(),
+        createdAt: memoIso,
         attachments,
       })
       onSaved()

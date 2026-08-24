@@ -16,17 +16,12 @@ export function getServerHost(): string {
     if (custom) return custom.replace(/\/$/, '')
   }
   if (typeof window !== 'undefined') {
-    const hostname = window.location.hostname
-    const port = window.location.port
     const protocol = window.location.protocol
 
     const isNative = Boolean(
       (window as any).Capacitor?.isNativePlatform?.() ||
-      (window as any).Capacitor ||
       protocol === 'capacitor:' ||
-      protocol === 'file:' ||
-      // 安卓 WebView 本地环境 (localhost:80 / localhost:443，即没有 5173开发端口和 3000服务器端口)
-      ((hostname === 'localhost' || hostname === '127.0.0.1') && (!port || port === '80' || port === '443'))
+      protocol === 'file:'
     )
     if (isNative) {
       return 'http://812264226.xyz:3000'

@@ -25,7 +25,7 @@ RUN npm run build -w apps/server && npm run build -w apps/web
 # ===== Stage 2: 运行时 =====
 FROM node:20-alpine AS runtime
 
-RUN apk add --no-cache openssl libc6-compat
+RUN apk add --no-cache openssl libc6-compat tzdata
 
 WORKDIR /app
 
@@ -46,6 +46,6 @@ ENV PORT=3000
 VOLUME ["/data"]
 EXPOSE 3000
 
-# 启动：首次运行自动创建/更新数据库表，然后启动服务
-CMD ["sh", "-c", "cd apps/server && npx prisma db push --skip-generate --accept-data-loss 2>/dev/null; cd /app && node apps/server/dist/index.js"]
+# 启动：首次运行自动创建/更新数据库表（失败时保留日志便于排查），然后启动服务
+CMD ["sh", "-c", "cd apps/server && npx prisma db push --skip-generate; cd /app && node apps/server/dist/index.js"]
 

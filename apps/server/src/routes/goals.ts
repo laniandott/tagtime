@@ -40,34 +40,42 @@ export default async function goalRoutes(app: FastifyInstance) {
       include: { tag: { include: { category: true } } },
       orderBy: { createdAt: 'desc' },
     })
+    if (goals.length === 0) return []
 
-    // 计算每个目标的当前周期进度
+    // 单次查询所有相关标签的记录（从最早的周期起点开始），再在内存中按目标分组，避免 N+1
     const now = new Date()
-    const result = await Promise.all(
-      goals.map(async (goal: Record<string, any>) => {
-        const start = periodStart(goal.period, goal.periodDays)
-        const entries = await prisma.timeEntry.findMany({
-          where: { tagId: goal.tagId, startTime: { gte: start, lte: now } },
-        })
+    const earliest = goals
+      .map((g) => periodStart(g.period, g.periodDays))
+      .reduce((min, s) => (s < min ? s : min))
+    const tagIds = [...new Set(goals.map((g) => g.tagId))]
+    const allEntries = await prisma.timeEntry.findMany({
+      where: { tagId: { in: tagIds }, startTime: { gte: earliest, lte: now } },
+      select: { tagId: true, startTime: true, endTime: true },
+    })
 
-        let current: number
-        if (goal.type === 'count') {
-          // 次数型：统计记录条数
-          current = entries.length
-        } else {
-          // 时长型：统计总分钟数
-          const totalMs = entries.reduce((s: number, e: { startTime: Date; endTime: Date | null }) => s + durationMs(e.startTime, e.endTime), 0)
-          current = Math.floor(totalMs / 60000)
-        }
+    const result = goals.map((goal) => {
+      const start = periodStart(goal.period, goal.periodDays)
+      const entries = allEntries.filter(
+        (e) => e.tagId === goal.tagId && e.startTime >= start
+      )
 
-        return {
-          ...goal,
-          current,
-          periodStart: start.toISOString(),
-          percent: Math.min(100, Math.round((current / goal.target) * 100)),
-        }
-      })
-    )
+      let current: number
+      if (goal.type === 'count') {
+        // 次数型：统计记录条数
+        current = entries.length
+      } else {
+        // 时长型：统计总分钟数
+        const totalMs = entries.reduce((s, e) => s + durationMs(e.startTime, e.endTime), 0)
+        current = Math.floor(totalMs / 60000)
+      }
+
+      return {
+        ...goal,
+        current,
+        periodStart: start.toISOString(),
+        percent: Math.min(100, Math.round((current / goal.target) * 100)),
+      }
+    })
     return result
   })
 
