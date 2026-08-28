@@ -29,13 +29,19 @@ function isAllDayEvent(event: ical.CalendarComponent): boolean {
 async function fetchAndParseIcs(url: string): Promise<ical.CalendarComponent[]> {
   const response = await fetch(url, {
     headers: { 'User-Agent': 'TagTime/1.0 CalendarSubscription' },
-    signal: AbortSignal.timeout(15000), // 15秒超时
+    signal: AbortSignal.timeout(30000), // 30秒超时
   })
   if (!response.ok) {
     throw new Error(`获取 ICS 失败: ${response.status} ${response.statusText}`)
   }
   const text = await response.text()
-  const data = ical.sync.parseICS(text)
+  // 使用异步解析，避免大文件阻塞事件循环
+  const data = await new Promise<Record<string, ical.CalendarComponent>>((resolve, reject) => {
+    ical.async.parseICS(text, (err, result) => {
+      if (err) reject(err)
+      else resolve(result)
+    })
+  })
   const events: ical.CalendarComponent[] = []
   for (const [, event] of Object.entries(data)) {
     if (event.type === 'VEVENT') {
