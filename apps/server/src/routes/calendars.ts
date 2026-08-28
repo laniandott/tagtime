@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
-import * as ical from 'node-ical'
+import ical from 'node-ical'
 
 // 从 ICS 事件中提取日期，处理全天事件的时区问题
 function parseIcsDate(val: ical.Date | Date | string | undefined): Date | null {
@@ -28,14 +28,14 @@ function isAllDayEvent(event: ical.CalendarComponent): boolean {
 // 抓取并解析 ICS 内容
 async function fetchAndParseIcs(url: string): Promise<ical.CalendarComponent[]> {
   const response = await fetch(url, {
-    headers: { 'User-Agent': 'TagTime/1.0 Calendar订阅' },
+    headers: { 'User-Agent': 'TagTime/1.0 CalendarSubscription' },
     signal: AbortSignal.timeout(15000), // 15秒超时
   })
   if (!response.ok) {
     throw new Error(`获取 ICS 失败: ${response.status} ${response.statusText}`)
   }
   const text = await response.text()
-  const data = ical.parseICS(text, {})
+  const data = ical.sync.parseICS(text)
   const events: ical.CalendarComponent[] = []
   for (const [, event] of Object.entries(data)) {
     if (event.type === 'VEVENT') {
