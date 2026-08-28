@@ -167,6 +167,7 @@ export default function CalendarPage() {
   const [entries, setEntries] = useState<TimeEntry[]>([])
   const [selectedEntry, setSelectedEntry] = useState<TimeEntry | null>(null)
   const [showSyncModal, setShowSyncModal] = useState(false)
+  const [showQuickCreate, setShowQuickCreate] = useState(false)
   const [now, setNow] = useState(new Date())
 
   // 每分钟更新当前时间（用于"现在"指示线）
@@ -268,43 +269,48 @@ export default function CalendarPage() {
 
   return (
     <div className="space-y-4">
-      {/* 头部：标题 + 导航 + 视图切换 */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-2">
+      {/* 头部：Google Calendar 风格导航栏 */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowQuickCreate(true)}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-brand text-white text-sm font-medium hover:bg-brand-600 transition-colors shadow-sm"
+          >
+            <span className="text-lg leading-none">+</span>
+            <span className="hidden sm:inline">新建</span>
+          </button>
           <button
             onClick={() => navigate(-1)}
-            className="w-8 h-8 rounded-lg border border-gray-200 dark:border-gray-800 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300 transition-colors"
           >
             ‹
           </button>
-          <h1 className="text-lg font-bold min-w-[120px] text-center">{title}</h1>
           <button
             onClick={() => navigate(1)}
-            className="w-8 h-8 rounded-lg border border-gray-200 dark:border-gray-800 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300 transition-colors"
           >
             ›
           </button>
-          {!isToday(currentDate) && (
-            <button
-              onClick={() => setCurrentDate(new Date())}
-              className="ml-1 px-3 py-1 rounded-lg text-sm border border-gray-200 dark:border-gray-800 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-            >
-              今天
-            </button>
-          )}
+          <button
+            onClick={() => setCurrentDate(new Date())}
+            className="px-4 py-1.5 rounded-full text-sm border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          >
+            今天
+          </button>
+          <h1 className="text-xl font-semibold ml-2 text-gray-800 dark:text-gray-100">{title}</h1>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {periodTotal > 0 && (
-            <span className="text-sm text-gray-400">
-              合计 <span className="font-mono font-medium text-gray-600 dark:text-gray-300">{formatDuration(periodTotal)}</span>
+            <span className="text-xs text-gray-400 mr-1">
+              合计 <span className="font-mono font-medium text-gray-500 dark:text-gray-400">{formatDuration(periodTotal)}</span>
             </span>
           )}
-          <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+          <div className="flex bg-gray-100 dark:bg-gray-800 rounded-full p-0.5">
             {(['day', 'week', 'month'] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
                   view === v
                     ? 'bg-white dark:bg-gray-700 text-brand shadow-sm'
                     : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
@@ -314,14 +320,12 @@ export default function CalendarPage() {
               </button>
             ))}
           </div>
-
           <button
             onClick={() => setShowSyncModal(true)}
-            className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-800 text-xs font-medium text-gray-700 dark:text-gray-200 flex items-center gap-1.5 transition shadow-xs"
-            title="将活动同步至手机或电脑系统日历 (iCalendar / WebCal)"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+            title="日历同步 (iCalendar)"
           >
-            <span>🗓️</span>
-            <span className="hidden sm:inline">日历同步</span>
+            🗓️
           </button>
         </div>
       </div>
@@ -350,6 +354,18 @@ export default function CalendarPage() {
 
       {/* 日历同步弹窗 */}
       {showSyncModal && <CalendarSyncModal onClose={() => setShowSyncModal(false)} />}
+
+      {/* 快速创建计时弹窗 */}
+      {showQuickCreate && (
+        <QuickCreateModal
+          defaultDate={currentDate}
+          onClose={() => setShowQuickCreate(false)}
+          onSaved={() => {
+            setShowQuickCreate(false)
+            api.timer.list({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setEntries).catch(() => {})
+          }}
+        />
+      )}
 
       {/* 沉浸式动态时间线 (Memos & 多媒体) */}
       <TimelineSection />
@@ -410,38 +426,42 @@ function DayView({ date, entries, now, onEntryClick }: {
             const topMin = (start - dayStart) / 60000
             const heightMin = (end - start) / 60000
             const top = (topMin / 60) * HOUR_HEIGHT_DAY
-            const height = Math.max((heightMin / 60) * HOUR_HEIGHT_DAY, 18)
+            const height = Math.max((heightMin / 60) * HOUR_HEIGHT_DAY, 20)
             const widthPercent = 100 / cols
             const leftPercent = (col / cols) * 100
             const color = entry.tag?.color ?? '#6d5efc'
+            const hasMemos = entry.memos && entry.memos.length > 0
             return (
               <button
                 key={entry.id}
                 onClick={() => onEntryClick(entry)}
-                className="absolute rounded-md text-left overflow-hidden hover:z-10 hover:shadow-md transition-shadow"
+                className="absolute rounded-lg text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150 group"
                 style={{
                   top: top + 1,
                   height: height - 2,
                   left: `calc(${leftPercent}% + 2px)`,
                   width: `calc(${widthPercent}% - 4px)`,
-                  backgroundColor: `${color}1a`,
+                  backgroundColor: `${color}15`,
                   borderLeft: `3px solid ${color}`,
                 }}
               >
-                <div className="px-1.5 py-0.5 text-xs font-medium truncate" style={{ color }}>
+                <div className="px-2 py-0.5 text-xs font-semibold truncate" style={{ color }}>
                   {entry.tag?.name}
                 </div>
-                {height > 36 && (
-                  <div className="px-1.5 text-[10px] text-gray-400">
-                    {new Date(entry.startTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                    {' - '}
-                    {entry.endTime
-                      ? new Date(entry.endTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-                      : '进行中'}
+                {height > 32 && (
+                  <div className="px-2 text-[10px] text-gray-400 flex items-center gap-1">
+                    <span>
+                      {new Date(entry.startTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                      {' - '}
+                      {entry.endTime
+                        ? new Date(entry.endTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+                        : '进行中'}
+                    </span>
+                    {hasMemos && <span title={`${entry.memos!.length} 条记事`}>📝</span>}
                   </div>
                 )}
-                {height > 54 && entry.note && (
-                  <div className="px-1.5 text-[10px] text-gray-400 truncate">📝 {entry.note}</div>
+                {height > 50 && entry.note && (
+                  <div className="px-2 text-[10px] text-gray-400 truncate">{entry.note}</div>
                 )}
               </button>
             )
@@ -540,27 +560,29 @@ function WeekView({ weekStart, entries, now, onEntryClick }: {
                 const topMin = (start - dayStart) / 60000
                 const heightMin = (end - start) / 60000
                 const top = (topMin / 60) * HOUR_HEIGHT_WEEK
-                const height = Math.max((heightMin / 60) * HOUR_HEIGHT_WEEK, 14)
+                const height = Math.max((heightMin / 60) * HOUR_HEIGHT_WEEK, 16)
                 const widthPercent = 100 / cols
                 const leftPercent = (col / cols) * 100
                 const color = entry.tag?.color ?? '#6d5efc'
+                const hasMemos = entry.memos && entry.memos.length > 0
                 return (
                   <button
                     key={entry.id}
                     onClick={() => onEntryClick(entry)}
-                    className="absolute rounded text-left overflow-hidden hover:z-10 hover:shadow-md transition-shadow"
+                    className="absolute rounded-md text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150"
                     style={{
                       top: top + 1,
                       height: height - 2,
                       left: `calc(${leftPercent}% + 1px)`,
                       width: `calc(${widthPercent}% - 2px)`,
-                      backgroundColor: `${color}1a`,
-                      borderLeft: `2px solid ${color}`,
+                      backgroundColor: `${color}15`,
+                      borderLeft: `2.5px solid ${color}`,
                     }}
                   >
-                    {height > 20 && (
-                      <div className="px-1 text-[10px] font-medium truncate" style={{ color }}>
+                    {height > 18 && (
+                      <div className="px-1.5 text-[10px] font-semibold truncate flex items-center gap-0.5" style={{ color }}>
                         {entry.tag?.name}
+                        {hasMemos && <span className="text-[8px]">📝</span>}
                       </div>
                     )}
                   </button>
@@ -590,15 +612,23 @@ function MonthView({ date, entriesByDay, dayTotal, onDayClick }: {
 }) {
   const days = getMonthGrid(date)
 
+  const getUniqueColors = (dayEntries: TimeEntry[]): string[] => {
+    const seen = new Set<string>()
+    const colors: string[] = []
+    for (const e of dayEntries) {
+      const c = e.tag?.color ?? '#6d5efc'
+      if (!seen.has(c)) { seen.add(c); colors.push(c) }
+    }
+    return colors
+  }
+
   return (
-    <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-hidden">
-      {/* 星期表头 */}
+    <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm">
       <div className="grid grid-cols-7 border-b border-gray-200 dark:border-gray-800">
         {WEEKDAYS_FULL.map((w) => (
           <div key={w} className="text-center py-2 text-xs text-gray-400 font-medium">{w}</div>
         ))}
       </div>
-      {/* 日期网格 */}
       <div className="grid grid-cols-7">
         {days.map((d) => {
           const key = startOfDay(d).toISOString()
@@ -606,37 +636,48 @@ function MonthView({ date, entriesByDay, dayTotal, onDayClick }: {
           const total = dayTotal(d)
           const inMonth = isSameMonth(d, date)
           const today = isToday(d)
+          const uniqueColors = getUniqueColors(dayEntries)
 
           return (
             <button
               key={d.toISOString()}
               onClick={() => onDayClick(d)}
-              className={`min-h-[88px] border-r border-b border-gray-100 dark:border-gray-800 p-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors ${!inMonth ? 'opacity-40' : ''}`}
+              className={`min-h-[92px] border-r border-b border-gray-100 dark:border-gray-800 p-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group ${!inMonth ? 'opacity-30' : ''}`}
             >
               <div className="flex items-center justify-between mb-1">
-                <span className={`text-xs font-medium w-5 h-5 flex items-center justify-center rounded-full ${today ? 'bg-brand text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                <span className={`text-xs font-semibold w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
+                  today
+                    ? 'bg-brand text-white'
+                    : 'text-gray-600 dark:text-gray-400 group-hover:bg-gray-200 dark:group-hover:bg-gray-700'
+                }`}>
                   {d.getDate()}
                 </span>
                 {total > 0 && (
                   <span className="text-[10px] text-gray-400 font-mono">{formatDuration(total)}</span>
                 )}
               </div>
-              {/* 条目迷你条 */}
-              <div className="space-y-0.5">
-                {dayEntries.slice(0, 3).map((e) => (
+              {uniqueColors.length > 0 && (
+                <div className="flex items-center gap-0.5 mb-1 flex-wrap">
+                  {uniqueColors.slice(0, 6).map((c, i) => (
+                    <span key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: c }} />
+                  ))}
+                </div>
+              )}
+              <div className="space-y-px">
+                {dayEntries.slice(0, 2).map((e) => (
                   <div
                     key={e.id}
-                    className="text-[10px] truncate rounded px-1 py-0.5"
+                    className="text-[9px] truncate rounded px-1 py-px leading-tight font-medium"
                     style={{
-                      backgroundColor: `${e.tag?.color ?? '#6d5efc'}1a`,
+                      backgroundColor: `${e.tag?.color ?? '#6d5efc'}18`,
                       color: e.tag?.color ?? '#6d5efc',
                     }}
                   >
                     {e.tag?.name}
                   </div>
                 ))}
-                {dayEntries.length > 3 && (
-                  <div className="text-[10px] text-gray-400 px-1">+{dayEntries.length - 3} 更多</div>
+                {dayEntries.length > 2 && (
+                  <div className="text-[9px] text-gray-400 px-1">+{dayEntries.length - 2}</div>
                 )}
               </div>
             </button>
@@ -657,42 +698,66 @@ function EntryDetail({ entry, onClose }: {
   const end = entry.endTime ? new Date(entry.endTime) : new Date()
   const duration = end.getTime() - start.getTime()
   const color = entry.tag?.color ?? '#6d5efc'
+  const memos = entry.memos ?? []
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 mb-4">
-          <span className="w-3 h-3 rounded-full" style={{ background: color }} />
-          <h3 className="text-lg font-semibold" style={{ color }}>{entry.tag?.name}</h3>
-          {entry.tag?.category && (
-            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: entry.tag.category.color, color: '#fff' }}>
-              {entry.tag.category.name}
-            </span>
-          )}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2.5 mb-5">
+          <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: color }} />
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold truncate" style={{ color }}>{entry.tag?.name}</h3>
+            {entry.tag?.category && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full inline-block mt-0.5" style={{ background: `${entry.tag.category.color}20`, color: entry.tag.category.color }}>
+                {entry.tag.category.name}
+              </span>
+            )}
+          </div>
         </div>
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-gray-400">开始</span>
-            <span>{start.toLocaleString('zh-CN', { hour12: false })}</span>
+        <div className="space-y-2.5 text-sm mb-4">
+          <div className="flex justify-between items-center">
+            <span className="text-gray-400 text-xs">开始</span>
+            <span className="text-gray-700 dark:text-gray-200">{start.toLocaleString('zh-CN', { hour12: false })}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">结束</span>
-            <span>{entry.endTime ? end.toLocaleString('zh-CN', { hour12: false }) : '进行中…'}</span>
+          <div className="flex justify-between items-center">
+            <span className="text-gray-400 text-xs">结束</span>
+            <span className="text-gray-700 dark:text-gray-200">{entry.endTime ? end.toLocaleString('zh-CN', { hour12: false }) : <span className="text-brand animate-pulse">进行中…</span>}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">时长</span>
-            <span className="font-mono font-medium">{formatDuration(duration)}</span>
+          <div className="flex justify-between items-center">
+            <span className="text-gray-400 text-xs">时长</span>
+            <span className="font-mono font-semibold text-brand">{formatDuration(duration)}</span>
           </div>
+          {entry.todo && (
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400 text-xs">关联待办</span>
+              <span className="text-gray-700 dark:text-gray-200 text-xs truncate max-w-[180px]">✅ {entry.todo.title}</span>
+            </div>
+          )}
           {entry.note && (
             <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
-              <div className="text-gray-400 mb-1">备注</div>
-              <div>{entry.note}</div>
+              <div className="text-gray-400 text-xs mb-1">备注</div>
+              <div className="text-gray-700 dark:text-gray-200 text-sm leading-relaxed">{entry.note}</div>
             </div>
           )}
         </div>
+        {memos.length > 0 && (
+          <div className="border-t border-gray-100 dark:border-gray-800 pt-3 mb-4">
+            <div className="text-xs text-gray-400 mb-2">📖 关联记事 ({memos.length})</div>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {memos.slice(0, 5).map((m) => (
+                <div key={m.id} className="text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/50 rounded-lg px-3 py-2 leading-relaxed">
+                  <span className="text-gray-400">{new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span className="mx-1">·</span>
+                  <span className="line-clamp-2">{m.content}</span>
+                </div>
+              ))}
+              {memos.length > 5 && <div className="text-[10px] text-gray-400 text-center">…还有 {memos.length - 5} 条</div>}
+            </div>
+          </div>
+        )}
         <button
           onClick={onClose}
-          className="mt-6 w-full py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+          className="w-full py-2.5 rounded-xl text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
         >
           关闭
         </button>
@@ -703,7 +768,7 @@ function EntryDetail({ entry, onClose }: {
 
 // ===== 动态时间线 (Timeline Section) =====
 function TimelineSection() {
-  const [days, setDays] = useState<1 | 7 | 30>(7)
+  const [days, setDays] = useState<number>(0) // 0 = 全部
   const [memos, setMemos] = useState<Memo[]>([])
   const [loading, setLoading] = useState(false)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
@@ -715,7 +780,7 @@ function TimelineSection() {
   const loadMemos = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await api.memos.list({ days })
+      const data = await api.memos.list(days > 0 ? { days } : {})
       setMemos(data)
     } catch (e) {
       setMemos([])
@@ -767,7 +832,7 @@ function TimelineSection() {
           </div>
         </div>
         <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 text-xs font-medium">
-          {([1, 7, 30] as const).map((d) => (
+          {([0, 1, 7, 30] as const).map((d) => (
             <button
               key={d}
               onClick={() => setDays(d)}
@@ -777,7 +842,7 @@ function TimelineSection() {
                   : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
               }`}
             >
-              {d === 1 ? '1天 (今天)' : d === 7 ? '7天 (本周)' : '30天 (本月)'}
+              {d === 0 ? '全部' : d === 1 ? '今天' : d === 7 ? '本周' : '本月'}
             </button>
           ))}
         </div>
@@ -790,7 +855,9 @@ function TimelineSection() {
         <div className="rounded-xl border border-dashed border-gray-200 dark:border-gray-800 p-8 text-center text-gray-400 text-sm">
           {searchQuery
             ? '未找到匹配的日记'
-            : `近 ${days === 1 ? '1 天' : `${days} 天`} 暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！`}
+            : days === 0
+              ? '暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！'
+              : `近 ${days === 1 ? '1 天' : `${days} 天`} 暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！`}
         </div>
       ) : (
         <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-200 dark:before:bg-gray-800">
@@ -1087,6 +1154,141 @@ function NewJournalModal({
           </button>
           <button onClick={save} className="px-4 py-2 rounded-lg text-sm bg-brand text-white hover:bg-brand-600 font-medium">
             保存日记
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===== 快速创建计时弹窗 =====
+
+function QuickCreateModal({ defaultDate, onClose, onSaved }: {
+  defaultDate: Date
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { tags, categories } = useStore()
+  const [tagId, setTagId] = useState<string>('')
+  const [note, setNote] = useState('')
+  const [startTime, setStartTime] = useState(toLocalInputWithSeconds(new Date()))
+  const [endTime, setEndTime] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const groupedTags = useMemo(() => {
+    const groups = new Map<string, { category: typeof categories[0] | null; tags: typeof tags }>()
+    for (const t of tags) {
+      const catId = t.categoryId ?? '_none'
+      if (!groups.has(catId)) {
+        const cat = categories.find((c) => c.id === t.categoryId) ?? null
+        groups.set(catId, { category: cat, tags: [] })
+      }
+      groups.get(catId)!.tags.push(t)
+    }
+    return Array.from(groups.values())
+  }, [tags, categories])
+
+  const save = async () => {
+    if (!tagId) { setError('请选择标签'); return }
+    const startIso = toIsoSafe(startTime)
+    if (!startIso) { setError('请选择有效时间'); return }
+    setSaving(true)
+    setError('')
+    try {
+      if (endTime) {
+        const endIso = toIsoSafe(endTime)
+        if (!endIso) { setError('结束时间无效'); setSaving(false); return }
+        await api.timer.manual({ tagId, startTime: startIso, endTime: endIso, note: note || undefined })
+      } else {
+        await api.timer.start({ tagId, note: note || undefined })
+      }
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md mx-4 shadow-xl space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold">⚡ 快速创建</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">✕</button>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1.5">标签 *</label>
+          <div className="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-2 space-y-2">
+            {groupedTags.map((g) => (
+              <div key={g.category?.id ?? '_none'}>
+                {g.category && (
+                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider px-1 mb-1">
+                    {g.category.icon ? `${g.category.icon} ` : ''}{g.category.name}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1">
+                  {g.tags.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setTagId(t.id)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-150 ${
+                        tagId === t.id
+                          ? 'ring-2 ring-offset-1 ring-offset-white dark:ring-offset-gray-900 shadow-sm'
+                          : 'hover:shadow-sm'
+                      }`}
+                      style={{
+                        backgroundColor: `${t.color}18`,
+                        color: t.color,
+                        ...(tagId === t.id ? { boxShadow: `0 0 0 2px ${t.color}40` } : {}),
+                      }}
+                    >
+                      {t.icon ? `${t.icon} ` : ''}{t.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">开始时间</label>
+          <DateTimeSecondPicker value={startTime} onChange={setStartTime} />
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">
+            结束时间 <span className="text-gray-400 font-normal">（留空 = 开始计时）</span>
+          </label>
+          <DateTimeSecondPicker value={endTime} onChange={setEndTime} />
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">备注</label>
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="可选备注…"
+            className="input text-sm"
+          />
+        </div>
+
+        {error && <div className="text-xs text-red-500">{error}</div>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            取消
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="px-5 py-2 rounded-xl text-sm bg-brand text-white hover:bg-brand-600 font-medium transition-colors disabled:opacity-50"
+          >
+            {saving ? '创建中…' : endTime ? '📥 补录' : '▶️ 开始计时'}
           </button>
         </div>
       </div>
