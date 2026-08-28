@@ -5,6 +5,8 @@ import type { TimeEntry, Memo } from '../types'
 import { MemoCreateModal, MemoEditModal } from './TimerPage'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 import { CalendarSyncModal } from '../components/CalendarSyncModal'
+import { SubscriptionManager } from '../components/SubscriptionManager'
+import type { CalendarEvent } from '../types'
 
 // ===== 日期工具函数 =====
 
@@ -168,6 +170,8 @@ export default function CalendarPage() {
   const [selectedEntry, setSelectedEntry] = useState<TimeEntry | null>(null)
   const [showSyncModal, setShowSyncModal] = useState(false)
   const [showQuickCreate, setShowQuickCreate] = useState(false)
+  const [showSubManager, setShowSubManager] = useState(false)
+  const [externalEvents, setExternalEvents] = useState<CalendarEvent[]>([])
   const [now, setNow] = useState(new Date())
 
   // 每分钟更新当前时间（用于"现在"指示线）
@@ -200,6 +204,11 @@ export default function CalendarPage() {
       })
       .then(setEntries)
       .catch(() => setEntries([]))
+    // 加载外部日历事件
+    api.calendars
+      .events({ from: range.from.toISOString(), to: range.to.toISOString() })
+      .then(setExternalEvents)
+      .catch(() => setExternalEvents([]))
   }, [range.from, range.to])
 
   // 导航
@@ -327,6 +336,13 @@ export default function CalendarPage() {
           >
             🗓️
           </button>
+          <button
+            onClick={() => setShowSubManager(true)}
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+            title="外部日历订阅管理"
+          >
+            📡
+          </button>
         </div>
       </div>
 
@@ -337,13 +353,14 @@ export default function CalendarPage() {
           <div>该时段暂无时间记录</div>
         </div>
       ) : view === 'day' ? (
-        <DayView date={currentDate} entries={entries} now={now} onEntryClick={setSelectedEntry} />
+        <DayView date={currentDate} entries={entries} externalEvents={externalEvents} now={now} onEntryClick={setSelectedEntry} />
       ) : view === 'week' ? (
-        <WeekView weekStart={startOfWeek(currentDate)} entries={entries} now={now} onEntryClick={setSelectedEntry} />
+        <WeekView weekStart={startOfWeek(currentDate)} entries={entries} externalEvents={externalEvents} now={now} onEntryClick={setSelectedEntry} />
       ) : (
         <MonthView
           date={currentDate}
           entriesByDay={entriesByDay}
+          externalEvents={externalEvents}
           dayTotal={dayTotal}
           onDayClick={(d) => { setCurrentDate(d); setView('day') }}
         />
@@ -367,6 +384,11 @@ export default function CalendarPage() {
         />
       )}
 
+      {/* 外部日历订阅管理弹窗 */}
+      {showSubManager && <SubscriptionManager onClose={() => { setShowSubManager(false); // 重新加载外部事件
+        api.calendars.events({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setExternalEvents).catch(() => {})
+      }} />}
+
       {/* 沉浸式动态时间线 (Memos & 多媒体) */}
       <TimelineSection />
     </div>
@@ -375,9 +397,10 @@ export default function CalendarPage() {
 
 // ===== 日视图 =====
 
-function DayView({ date, entries, now, onEntryClick }: {
+function DayView({ date, entries, externalEvents, now, onEntryClick }: {
   date: Date
   entries: TimeEntry[]
+  externalEvents: CalendarEvent[]
   now: Date
   onEntryClick: (e: TimeEntry) => void
 }) {
@@ -466,6 +489,36 @@ function DayView({ date, entries, now, onEntryClick }: {
               </button>
             )
           })}
+          {/* 外部日历事件 */}
+          {(() => {
+            const dStart = startOfDay(date).getTime()
+            const dEnd = endOfDay(date).getTime()
+            const dayExternal = externalEvents.filter((ev) => {
+              const evStart = new Date(ev.dtstart).getTime()
+              const evEnd = ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000
+              return evStart < dEnd && evEnd > dStart
+            })
+            return dayExternal.map((ev) => {
+              const evStart = Math.max(new Date(ev.dtstart).getTime(), dStart)
+              const evEnd = Math.min(ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000, dEnd)
+              const topMin = (evStart - dStart) / 60000
+              const heightMin = Math.max((evEnd - evStart) / 60000, 15)
+              const top = (topMin / 60) * HOUR_HEIGHT_DAY
+              const height = (heightMin / 60) * HOUR_HEIGHT_DAY
+              const color = ev.subscription?.color ?? '#999'
+              return (
+                <div
+                  key={`ext-${ev.id}`}
+                  className="absolute rounded-lg text-left overflow-hidden opacity-70 pointer-events-none"
+                  style={{ top: top + 1, height: height - 2, left: '50%', width: '48%', backgroundColor: `${color}12`, borderLeft: `2px dashed ${color}` }}
+                >
+                  <div className="px-2 py-0.5 text-[10px] font-medium truncate" style={{ color }}>
+                    {ev.allday ? '📌 ' : ''}{ev.summary}
+                  </div>
+                </div>
+              )
+            })
+          })()}
           {/* 现在时间线 */}
           {nowTop >= 0 && (
             <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
@@ -483,9 +536,10 @@ function DayView({ date, entries, now, onEntryClick }: {
 
 // ===== 周视图 =====
 
-function WeekView({ weekStart, entries, now, onEntryClick }: {
+function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
   weekStart: Date
   entries: TimeEntry[]
+  externalEvents: CalendarEvent[]
   now: Date
   onEntryClick: (e: TimeEntry) => void
 }) {
@@ -588,6 +642,34 @@ function WeekView({ weekStart, entries, now, onEntryClick }: {
                   </button>
                 )
               })}
+              {/* 外部日历事件 */}
+              {(() => {
+                const dayExternal = externalEvents.filter((ev) => {
+                  const evStart = new Date(ev.dtstart).getTime()
+                  const evEnd = ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000
+                  return evStart < dayEnd && evEnd > dayStart
+                })
+                return dayExternal.map((ev) => {
+                  const evStart = Math.max(new Date(ev.dtstart).getTime(), dayStart)
+                  const evEnd = Math.min(ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000, dayEnd)
+                  const topMin = (evStart - dayStart) / 60000
+                  const heightMin = Math.max((evEnd - evStart) / 60000, 12)
+                  const top = (topMin / 60) * HOUR_HEIGHT_WEEK
+                  const height = (heightMin / 60) * HOUR_HEIGHT_WEEK
+                  const color = ev.subscription?.color ?? '#999'
+                  return (
+                    <div
+                      key={`ext-${ev.id}`}
+                      className="absolute rounded text-left overflow-hidden opacity-60 pointer-events-none"
+                      style={{ top: top + 1, height: height - 2, left: '10%', width: '80%', backgroundColor: `${color}10`, borderLeft: `1.5px dashed ${color}` }}
+                    >
+                      <div className="px-1 text-[8px] font-medium truncate" style={{ color }}>
+                        {ev.allday ? '📌 ' : ''}{ev.summary}
+                      </div>
+                    </div>
+                  )
+                })
+              })()}
               {/* 现在时间线 */}
               {showNowLine && (
                 <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
@@ -604,9 +686,10 @@ function WeekView({ weekStart, entries, now, onEntryClick }: {
 
 // ===== 月视图 =====
 
-function MonthView({ date, entriesByDay, dayTotal, onDayClick }: {
+function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }: {
   date: Date
   entriesByDay: Map<string, TimeEntry[]>
+  externalEvents: CalendarEvent[]
   dayTotal: (d: Date) => number
   onDayClick: (d: Date) => void
 }) {
@@ -663,6 +746,27 @@ function MonthView({ date, entriesByDay, dayTotal, onDayClick }: {
                   ))}
                 </div>
               )}
+              {/* 外部日历事件标记 */}
+              {(() => {
+                const dayKey = startOfDay(d).toISOString()
+                const dayExtStart = startOfDay(d).getTime()
+                const dayExtEnd = endOfDay(d).getTime()
+                const dayExt = externalEvents.filter((ev) => {
+                  const evS = new Date(ev.dtstart).getTime()
+                  const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
+                  return evS < dayExtEnd && evE > dayExtStart
+                })
+                if (dayExt.length === 0) return null
+                const extColors = [...new Set(dayExt.map((e) => e.subscription?.color ?? '#999'))]
+                return (
+                  <div className="flex items-center gap-0.5 mb-1 flex-wrap">
+                    {extColors.slice(0, 4).map((c, i) => (
+                      <span key={i} className="w-1.5 h-1.5 rounded-full border border-dashed" style={{ borderColor: c, backgroundColor: `${c}30` }} />
+                    ))}
+                    {dayExt.length > 0 && <span className="text-[8px] text-gray-400">📅{dayExt.length}</span>}
+                  </div>
+                )
+              })()}
               <div className="space-y-px">
                 {dayEntries.slice(0, 2).map((e) => (
                   <div

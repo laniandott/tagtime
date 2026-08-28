@@ -8,6 +8,8 @@ import type {
   TagStat,
   Goal,
   Memo,
+  CalendarSubscription,
+  CalendarEvent,
 } from './types'
 
 export function getServerHost(): string {
@@ -198,5 +200,24 @@ export const api = {
       return res.json() as Promise<{ filename: string; path: string; mimeType: string; size: number }>
     },
     remove: (id: string) => req(`/memos/${id}`, { method: 'DELETE' }),
+  },
+  calendars: {
+    subscriptions: {
+      list: () => req<CalendarSubscription[]>('/calendars/subscriptions'),
+      create: (data: { name: string; url: string; color?: string }) =>
+        req<CalendarSubscription>('/calendars/subscriptions', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Partial<CalendarSubscription>) =>
+        req<CalendarSubscription>(`/calendars/subscriptions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      remove: (id: string) => req(`/calendars/subscriptions/${id}`, { method: 'DELETE' }),
+      sync: (id: string) =>
+        req<{ ok: boolean; count: number }>(`/calendars/subscriptions/${id}/sync`, { method: 'POST' }),
+    },
+    events: (params?: { from?: string; to?: string }) => {
+      const q = new URLSearchParams()
+      if (params?.from) q.set('from', params.from)
+      if (params?.to) q.set('to', params.to)
+      const qs = q.toString()
+      return req<CalendarEvent[]>(`/calendars/external-events${qs ? `?${qs}` : ''}`)
+    },
   },
 }

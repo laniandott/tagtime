@@ -101,9 +101,33 @@ export interface Goal {
   active: boolean
   createdAt: string
   updatedAt: string
-  // 以下为 /goals 接口返回的进度字段
   tag?: Tag | null
   current?: number
   periodStart?: string
   percent?: number
+}
+
+export interface CalendarSubscription {
+  id: string
+  name: string
+  url: string
+  color: string
+  active: boolean
+  lastSyncAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CalendarEvent {
+  id: string
+  subscriptionId: string
+  uid: string
+  summary: string
+  description: string | null
+  location: string | null
+  dtstart: string
+  dtend: string | null
+  allday: boolean
+  rrule: string | null
+  subscription?: { name: string; color: string }
 }

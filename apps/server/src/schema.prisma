@@ -145,3 +145,36 @@ model Attachment {
   @@index([memoId])
 }
 
+/// 外部 ICS 日历订阅
+model CalendarSubscription {
+  id          String    @id @default(cuid())
+  name        String                          // 显示名称
+  url         String                          // ICS 源 URL
+  color       String    @default("#e74c3c")   // 显示颜色
+  active      Boolean   @default(true)
+  lastSyncAt  DateTime?                       // 上次同步时间
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  events CalendarEvent[]
+}
+
+/// 从 ICS 解析出的事件缓存
+model CalendarEvent {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  uid            String   // ICS 事件 UID
+  summary        String   // 事件标题
+  description    String?  // 事件描述
+  location       String?  // 地点
+  dtstart        DateTime // 开始时间
+  dtend          DateTime? // 结束时间
+  allday         Boolean  @default(false) // 是否全天事件
+  rrule          String?  // 重复规则
+  subscription   CalendarSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([dtstart])
+  @@unique([subscriptionId, uid])
+}
+
