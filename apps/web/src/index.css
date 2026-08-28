@@ -9,6 +9,10 @@
 
 body {
   margin: 0;
+  /* env(safe-area-inset-*) 在 Android WebView 下通常为 0，作为安全网保留；
+     真正的顶部避让由 MainActivity.java 的 WindowInsets 处理 */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
 }
 
