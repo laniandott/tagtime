@@ -2,23 +2,22 @@ import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
 import ical from 'node-ical'
 
-// 从 ICS 事件中提取日期，处理全天事件的时区问题
-function parseIcsDate(val: ical.Date | Date | string | undefined): Date | null {
+// 从 ICS 事件中提取日期
+function parseIcsDate(val: any): Date | null {
   if (!val) return null
   if (val instanceof Date) return val
   if (typeof val === 'string') return new Date(val)
   // ical.Date 对象
-  if ('getDate' in val && typeof (val as any).getDate === 'function') {
-    return (val as ical.Date).toDate()
+  if (typeof val === 'object' && typeof val.toDate === 'function') {
+    return val.toDate()
   }
   return null
 }
 
 // 判断是否为全天事件
-function isAllDayEvent(event: ical.CalendarComponent): boolean {
+function isAllDayEvent(event: any): boolean {
   const start = event.start
   if (!start) return false
-  // 如果开始时间是 ical.Date 类型且没有时间部分，视为全天事件
   if (start instanceof Date) {
     return start.getHours() === 0 && start.getMinutes() === 0 && start.getSeconds() === 0
   }
@@ -26,23 +25,23 @@ function isAllDayEvent(event: ical.CalendarComponent): boolean {
 }
 
 // 抓取并解析 ICS 内容
-async function fetchAndParseIcs(url: string): Promise<ical.CalendarComponent[]> {
+async function fetchAndParseIcs(url: string): Promise<any[]> {
   const response = await fetch(url, {
     headers: { 'User-Agent': 'TagTime/1.0 CalendarSubscription' },
-    signal: AbortSignal.timeout(30000), // 30秒超时
+    signal: AbortSignal.timeout(30000),
   })
   if (!response.ok) {
     throw new Error(`获取 ICS 失败: ${response.status} ${response.statusText}`)
   }
   const text = await response.text()
   // 使用异步解析，避免大文件阻塞事件循环
-  const data = await new Promise<Record<string, ical.CalendarComponent>>((resolve, reject) => {
-    ical.async.parseICS(text, (err, result) => {
+  const data = await new Promise<Record<string, any>>((resolve, reject) => {
+    ical.async.parseICS(text, (err: any, result: any) => {
       if (err) reject(err)
       else resolve(result)
     })
   })
-  const events: ical.CalendarComponent[] = []
+  const events: any[] = []
   for (const [, event] of Object.entries(data)) {
     if (event.type === 'VEVENT') {
       events.push(event)
@@ -117,13 +116,11 @@ export default async function calendarsRoutes(app: FastifyInstance) {
       return { error: '名称不能为空' }
     }
 
-    // 验证 URL 格式
     try { new URL(url.trim()) } catch {
       reply.code(400)
       return { error: '无效的 URL 格式' }
     }
 
-    // 创建订阅
     const sub = await prisma.calendarSubscription.create({
       data: { name: name.trim(), url: url.trim(), color: color || '#e74c3c' },
     })

@@ -425,6 +425,36 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
       className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-y-auto"
       style={{ maxHeight: 'calc(100vh - 220px)' }}
     >
+      {/* 全天事件栏 */}
+      {(() => {
+        const dS = startOfDay(date).getTime()
+        const dE = endOfDay(date).getTime()
+        const dayExt = externalEvents.filter((ev) => {
+          const evS = new Date(ev.dtstart).getTime()
+          const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
+          return evS < dE && evE > dS
+        })
+        if (dayExt.length === 0) return null
+        const seen = new Set<string>()
+        const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
+        return (
+          <div className="flex border-b border-gray-200 dark:border-gray-800 px-2 py-1 gap-1 flex-wrap">
+            {unique.map((ev) => {
+              const color = ev.subscription?.color ?? '#2ecc71'
+              return (
+                <div
+                  key={ev.id}
+                  className="text-[10px] font-semibold text-white rounded px-2 py-0.5"
+                  style={{ backgroundColor: color }}
+                >
+                  {ev.summary}
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
+
       <div className="flex">
         {/* 小时刻度 */}
         <div className="flex-shrink-0 w-12 relative" style={{ height: 24 * HOUR_HEIGHT_DAY }}>
@@ -489,36 +519,6 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
               </button>
             )
           })}
-          {/* 外部日历事件 */}
-          {(() => {
-            const dStart = startOfDay(date).getTime()
-            const dEnd = endOfDay(date).getTime()
-            const dayExternal = externalEvents.filter((ev) => {
-              const evStart = new Date(ev.dtstart).getTime()
-              const evEnd = ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000
-              return evStart < dEnd && evEnd > dStart
-            })
-            return dayExternal.map((ev) => {
-              const evStart = Math.max(new Date(ev.dtstart).getTime(), dStart)
-              const evEnd = Math.min(ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000, dEnd)
-              const topMin = (evStart - dStart) / 60000
-              const heightMin = Math.max((evEnd - evStart) / 60000, 15)
-              const top = (topMin / 60) * HOUR_HEIGHT_DAY
-              const height = (heightMin / 60) * HOUR_HEIGHT_DAY
-              const color = ev.subscription?.color ?? '#999'
-              return (
-                <div
-                  key={`ext-${ev.id}`}
-                  className="absolute rounded-lg text-left overflow-hidden opacity-70 pointer-events-none"
-                  style={{ top: top + 1, height: height - 2, left: '50%', width: '48%', backgroundColor: `${color}12`, borderLeft: `2px dashed ${color}` }}
-                >
-                  <div className="px-2 py-0.5 text-[10px] font-medium truncate" style={{ color }}>
-                    {ev.allday ? '📌 ' : ''}{ev.summary}
-                  </div>
-                </div>
-              )
-            })
-          })()}
           {/* 现在时间线 */}
           {nowTop >= 0 && (
             <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
@@ -572,6 +572,53 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
           </div>
         ))}
       </div>
+
+      {/* 全天事件栏（节假日等外部日历事件） */}
+      {(() => {
+        const hasAnyExternal = days.some((d) => {
+          const dS = startOfDay(d).getTime()
+          const dE = endOfDay(d).getTime()
+          return externalEvents.some((ev) => {
+            const evS = new Date(ev.dtstart).getTime()
+            const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
+            return evS < dE && evE > dS
+          })
+        })
+        if (!hasAnyExternal) return null
+        return (
+          <div className="flex border-b border-gray-200 dark:border-gray-800">
+            <div className="flex-shrink-0 w-10" />
+            {days.map((d) => {
+              const dS = startOfDay(d).getTime()
+              const dE = endOfDay(d).getTime()
+              const dayExt = externalEvents.filter((ev) => {
+                const evS = new Date(ev.dtstart).getTime()
+                const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
+                return evS < dE && evE > dS
+              })
+              const seen = new Set<string>()
+              const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
+              return (
+                <div key={d.toISOString()} className="flex-1 min-h-[24px] px-0.5 py-0.5 space-y-0.5">
+                  {unique.slice(0, 2).map((ev) => {
+                    const color = ev.subscription?.color ?? '#2ecc71'
+                    return (
+                      <div
+                        key={ev.id}
+                        className="text-[9px] font-semibold text-white rounded px-1 py-0.5 truncate leading-tight"
+                        style={{ backgroundColor: color }}
+                        title={ev.summary}
+                      >
+                        {ev.summary}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       <div className="flex">
         {/* 小时刻度 */}
@@ -642,34 +689,6 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
                   </button>
                 )
               })}
-              {/* 外部日历事件 */}
-              {(() => {
-                const dayExternal = externalEvents.filter((ev) => {
-                  const evStart = new Date(ev.dtstart).getTime()
-                  const evEnd = ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000
-                  return evStart < dayEnd && evEnd > dayStart
-                })
-                return dayExternal.map((ev) => {
-                  const evStart = Math.max(new Date(ev.dtstart).getTime(), dayStart)
-                  const evEnd = Math.min(ev.dtend ? new Date(ev.dtend).getTime() : evStart + 3600000, dayEnd)
-                  const topMin = (evStart - dayStart) / 60000
-                  const heightMin = Math.max((evEnd - evStart) / 60000, 12)
-                  const top = (topMin / 60) * HOUR_HEIGHT_WEEK
-                  const height = (heightMin / 60) * HOUR_HEIGHT_WEEK
-                  const color = ev.subscription?.color ?? '#999'
-                  return (
-                    <div
-                      key={`ext-${ev.id}`}
-                      className="absolute rounded text-left overflow-hidden opacity-60 pointer-events-none"
-                      style={{ top: top + 1, height: height - 2, left: '10%', width: '80%', backgroundColor: `${color}10`, borderLeft: `1.5px dashed ${color}` }}
-                    >
-                      <div className="px-1 text-[8px] font-medium truncate" style={{ color }}>
-                        {ev.allday ? '📌 ' : ''}{ev.summary}
-                      </div>
-                    </div>
-                  )
-                })
-              })()}
               {/* 现在时间线 */}
               {showNowLine && (
                 <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
@@ -725,7 +744,7 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
             <button
               key={d.toISOString()}
               onClick={() => onDayClick(d)}
-              className={`min-h-[92px] border-r border-b border-gray-100 dark:border-gray-800 p-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group ${!inMonth ? 'opacity-30' : ''}`}
+              className={`min-h-[100px] border-r border-b border-gray-100 dark:border-gray-800 p-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group ${!inMonth ? 'opacity-30' : ''}`}
             >
               <div className="flex items-center justify-between mb-1">
                 <span className={`text-xs font-semibold w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
@@ -746,9 +765,8 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                   ))}
                 </div>
               )}
-              {/* 外部日历事件标记 */}
+              {/* 外部日历事件 — 彩色横条 banner */}
               {(() => {
-                const dayKey = startOfDay(d).toISOString()
                 const dayExtStart = startOfDay(d).getTime()
                 const dayExtEnd = endOfDay(d).getTime()
                 const dayExt = externalEvents.filter((ev) => {
@@ -757,13 +775,27 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                   return evS < dayExtEnd && evE > dayExtStart
                 })
                 if (dayExt.length === 0) return null
-                const extColors = [...new Set(dayExt.map((e) => e.subscription?.color ?? '#999'))]
+                // 去重：同名事件只显示一个
+                const seen = new Set<string>()
+                const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
                 return (
-                  <div className="flex items-center gap-0.5 mb-1 flex-wrap">
-                    {extColors.slice(0, 4).map((c, i) => (
-                      <span key={i} className="w-1.5 h-1.5 rounded-full border border-dashed" style={{ borderColor: c, backgroundColor: `${c}30` }} />
-                    ))}
-                    {dayExt.length > 0 && <span className="text-[8px] text-gray-400">📅{dayExt.length}</span>}
+                  <div className="space-y-0.5 mb-1">
+                    {unique.slice(0, 2).map((ev) => {
+                      const color = ev.subscription?.color ?? '#2ecc71'
+                      return (
+                        <div
+                          key={ev.id}
+                          className="text-[9px] font-semibold text-white rounded px-1.5 py-0.5 truncate leading-tight"
+                          style={{ backgroundColor: color }}
+                          title={ev.summary}
+                        >
+                          {ev.summary}
+                        </div>
+                      )
+                    })}
+                    {unique.length > 2 && (
+                      <div className="text-[8px] text-gray-400 px-1">+{unique.length - 2} 更多</div>
+                    )}
                   </div>
                 )
               })()}
