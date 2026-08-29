@@ -21,6 +21,85 @@ body {
   @apply w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent;
 }
 
+/* 待办与日记双栏：桌面悬停、移动端点击都复用同一组比例状态。 */
+.todo-diary-workspace {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+  min-width: 0;
+  height: min(760px, calc(100vh - 180px));
+  min-height: 380px;
+}
+
+.todo-diary-pane {
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 0.75rem;
+  background: rgb(249 250 251 / 0.7);
+  transition: flex-grow 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    flex-basis 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 360ms ease,
+    border-color 360ms ease,
+    box-shadow 360ms ease;
+}
+
+.dark .todo-diary-pane {
+  border-color: rgb(31 41 55);
+  background: rgb(17 24 39 / 0.55);
+}
+
+.todo-diary-pane--active {
+  flex: 4 1 0%;
+  border-color: rgb(167 139 250 / 0.45);
+  box-shadow: 0 12px 28px rgb(109 94 252 / 0.08);
+}
+
+.todo-diary-pane--compact {
+  flex: 1 1 0%;
+  background: rgb(243 244 246 / 0.55);
+}
+
+.dark .todo-diary-pane--compact {
+  background: rgb(31 41 55 / 0.35);
+}
+
+.todo-diary-pane__scale,
+.diary-panel__scale {
+  width: 100%;
+  transform-origin: top left;
+  transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms ease;
+  will-change: transform;
+}
+
+.todo-diary-pane--compact .todo-diary-pane__scale,
+.diary-panel--compact .diary-panel__scale {
+  width: 138.889%;
+  transform: scale(0.72);
+  opacity: 0.88;
+}
+
+@media (max-width: 767px) {
+  .todo-diary-workspace {
+    flex-direction: row;
+    gap: 0.5rem;
+    height: min(760px, calc(100dvh - 160px));
+    min-height: 360px;
+  }
+
+  .todo-diary-pane,
+  .todo-diary-pane--active,
+  .todo-diary-pane--compact {
+    min-height: 0;
+  }
+}
+
 /* 自定义滚动条 */
 ::-webkit-scrollbar {
   width: 8px;

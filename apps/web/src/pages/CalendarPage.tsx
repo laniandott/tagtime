@@ -1,8 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { api, resolveUploadUrl } from '../api'
+import { api } from '../api'
 import { formatDuration, useStore, toIsoSafe } from '../store'
-import type { TimeEntry, Memo } from '../types'
-import { MemoCreateModal, MemoEditModal } from './TimerPage'
+import type { TimeEntry, Memo, Todo } from '../types'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 import { CalendarSyncModal } from '../components/CalendarSyncModal'
 import { SubscriptionManager } from '../components/SubscriptionManager'
@@ -107,6 +106,33 @@ function minutesFromStartOfDay(d: Date): number {
   return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60
 }
 
+function toLocalInputWithSeconds(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function externalEventRange(event: CalendarEvent): { start: number; end: number } {
+  const start = new Date(event.dtstart).getTime()
+  const fallbackDuration = event.allday ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000
+  const end = event.dtend ? new Date(event.dtend).getTime() : start + fallbackDuration
+  return { start, end }
+}
+
+function externalEventOverlapsDay(event: CalendarEvent, dayStart: number, dayEnd: number): boolean {
+  const { start, end } = externalEventRange(event)
+  return Number.isFinite(start) && Number.isFinite(end) && start < dayEnd && end > dayStart
+}
+
+function formatExternalEventLabel(event: CalendarEvent): string {
+  if (event.allday) return event.summary
+  const start = new Date(event.dtstart)
+  const startText = start.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (!event.dtend) return `${startText} ${event.summary}`
+  const end = new Date(event.dtend)
+  const endText = end.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return `${startText}-${endText} ${event.summary}`
+}
+
 // ===== 重叠布局算法（同 Google Calendar）=====
 
 interface LayoutItem {
@@ -176,16 +202,21 @@ const HOUR_HEIGHT_DAY = 60
 const HOUR_HEIGHT_WEEK = 48
 
 export default function CalendarPage() {
-  const [view, setView] = useState<'day' | 'week' | 'month'>('week')
+  const { categories } = useStore()
+  const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [entries, setEntries] = useState<TimeEntry[]>([])
+  const [memos, setMemos] = useState<Memo[]>([])
   const [selectedEntry, setSelectedEntry] = useState<TimeEntry | null>(null)
   const [showSyncModal, setShowSyncModal] = useState(false)
-  const [showQuickCreate, setShowQuickCreate] = useState(false)
+  const [quickCreateDefaults, setQuickCreateDefaults] = useState<{ date: Date; startTime?: Date; endTime?: Date } | null>(null)
   const [showSubManager, setShowSubManager] = useState(false)
+  const [showFilter, setShowFilter] = useState(false)
+  const [selectedCategoryKeys, setSelectedCategoryKeys] = useState<Set<string> | null>(null)
   const [externalEvents, setExternalEvents] = useState<CalendarEvent[]>([])
   const [dayDetailDate, setDayDetailDate] = useState<Date | null>(null) // 月视图点击日期弹窗
   const [now, setNow] = useState(new Date())
+  const [calendarLoading, setCalendarLoading] = useState(false)
 
   // 每分钟更新当前时间（用于"现在"指示线）
   useEffect(() => {
@@ -208,20 +239,46 @@ export default function CalendarPage() {
     }
   }, [view, currentDate])
 
-  // 加载数据
+  const allCategoryKeys = useMemo(
+    () => new Set([...categories.map((category) => category.id), '_none']),
+    [categories],
+  )
+
+  // 标签/分类筛选在前端完成，避免切换筛选器时重复请求。
+  const visibleEntries = useMemo(() => {
+    if (!selectedCategoryKeys) return entries
+    return entries.filter((entry) => selectedCategoryKeys.has(entry.tag?.categoryId ?? '_none'))
+  }, [entries, selectedCategoryKeys])
+
+  const memosByDay = useMemo(() => {
+    const map = new Map<string, Memo[]>()
+    for (const memo of memos) {
+      const key = startOfDay(new Date(memo.createdAt)).toISOString()
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(memo)
+    }
+    return map
+  }, [memos])
+
+  // 加载当前视图所需的三类数据，并避免快速翻页时旧请求覆盖新页面。
   useEffect(() => {
-    api.timer
-      .list({
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
-      })
-      .then(setEntries)
-      .catch(() => setEntries([]))
-    // 加载外部日历事件
-    api.calendars
-      .events({ from: range.from.toISOString(), to: range.to.toISOString() })
-      .then(setExternalEvents)
-      .catch(() => setExternalEvents([]))
+    let cancelled = false
+    setCalendarLoading(true)
+    const params = { from: range.from.toISOString(), to: range.to.toISOString() }
+
+    Promise.allSettled([
+      api.timer.list(params),
+      api.calendars.events(params),
+      api.memos.list(params),
+    ]).then(([entryResult, externalResult, memoResult]) => {
+      if (cancelled) return
+      setEntries(entryResult.status === 'fulfilled' ? entryResult.value : [])
+      setExternalEvents(externalResult.status === 'fulfilled' ? externalResult.value : [])
+      setMemos(memoResult.status === 'fulfilled' ? memoResult.value : [])
+      setCalendarLoading(false)
+    })
+
+    return () => { cancelled = true }
   }, [range.from, range.to])
 
   // 导航
@@ -238,7 +295,7 @@ export default function CalendarPage() {
   // 按天分组条目（跨午夜的计时会出现在它跨越的每一天）
   const entriesByDay = useMemo(() => {
     const map = new Map<string, TimeEntry[]>()
-    for (const e of entries) {
+    for (const e of visibleEntries) {
       const entryStart = startOfDay(new Date(e.startTime))
       const entryEnd = e.endTime ? startOfDay(new Date(e.endTime)) : startOfDay(new Date())
       // 遍历计时跨越的每一天
@@ -251,7 +308,7 @@ export default function CalendarPage() {
       }
     }
     return map
-  }, [entries])
+  }, [visibleEntries])
 
   // 计算当日总时长（跨午夜计时只计算当天部分）
   const dayTotal = useCallback((day: Date): number => {
@@ -267,15 +324,22 @@ export default function CalendarPage() {
       const clippedEnd = Math.min(eEnd, dEnd)
       return sum + (clippedEnd - clippedStart)
     }, 0)
-  }, [entriesByDay])
+  }, [entriesByDay, now])
 
   // 当前周期总时长
   const periodTotal = useMemo(() => {
-    return entries.reduce((sum, e) => {
+    return visibleEntries.reduce((sum, e) => {
       const end = e.endTime ? new Date(e.endTime).getTime() : Date.now()
       return sum + (end - new Date(e.startTime).getTime())
     }, 0)
-  }, [entries])
+  }, [visibleEntries, now])
+
+  const hasCalendarContent = visibleEntries.length > 0 || externalEvents.length > 0 || memos.length > 0
+  const filterCount = selectedCategoryKeys?.size ?? allCategoryKeys.size
+
+  const setQuickCreateForDate = (date: Date, startTime?: Date, endTime?: Date) => {
+    setQuickCreateDefaults({ date, startTime, endTime })
+  }
 
   // 标题
   const title = useMemo(() => {
@@ -295,7 +359,7 @@ export default function CalendarPage() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setShowQuickCreate(true)}
+            onClick={() => setQuickCreateForDate(currentDate)}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-brand text-white text-sm font-medium hover:bg-brand-600 transition-colors shadow-sm"
           >
             <span className="text-lg leading-none">+</span>
@@ -327,6 +391,63 @@ export default function CalendarPage() {
               合计 <span className="font-mono font-medium text-gray-500 dark:text-gray-400">{formatDuration(periodTotal)}</span>
             </span>
           )}
+          <div className="relative">
+            <button
+              onClick={() => setShowFilter((open) => !open)}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                selectedCategoryKeys ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
+            >
+              筛选{selectedCategoryKeys ? ` (${filterCount})` : ''}
+            </button>
+            {showFilter && (
+              <div className="absolute right-0 top-full mt-2 z-30 w-60 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 shadow-xl">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-600 dark:text-gray-200">显示分类</span>
+                  <button onClick={() => setSelectedCategoryKeys(null)} className="text-[10px] text-brand hover:underline">全部</button>
+                </div>
+                <div className="space-y-1 max-h-52 overflow-y-auto">
+                  {categories.map((category) => {
+                    const checked = selectedCategoryKeys === null || selectedCategoryKeys.has(category.id)
+                    return (
+                      <label key={category.id} className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setSelectedCategoryKeys((prev) => {
+                            const next = new Set(prev ?? allCategoryKeys)
+                            if (next.has(category.id)) next.delete(category.id)
+                            else next.add(category.id)
+                            return next
+                          })}
+                        />
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: category.color }} />
+                        <span className="truncate">{category.name}</span>
+                      </label>
+                    )
+                  })}
+                  <label className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedCategoryKeys === null || selectedCategoryKeys.has('_none')}
+                      onChange={() => setSelectedCategoryKeys((prev) => {
+                        const next = new Set(prev ?? allCategoryKeys)
+                        if (next.has('_none')) next.delete('_none')
+                        else next.add('_none')
+                        return next
+                      })}
+                    />
+                    <span className="w-2 h-2 rounded-full bg-gray-400" />
+                    <span>未分类</span>
+                  </label>
+                </div>
+                <div className="flex justify-between mt-2 pt-2 border-t border-gray-100 dark:border-gray-800">
+                  <button onClick={() => setSelectedCategoryKeys(new Set())} className="text-[10px] text-gray-400 hover:text-red-500">全部取消</button>
+                  <button onClick={() => setShowFilter(false)} className="text-[10px] text-brand hover:underline">完成</button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="flex bg-gray-100 dark:bg-gray-800 rounded-full p-0.5">
             {(['day', 'week', 'month'] as const).map((v) => (
               <button
@@ -360,19 +481,39 @@ export default function CalendarPage() {
       </div>
 
       {/* 日历主体 */}
-      {entries.length === 0 ? (
+      {calendarLoading && !hasCalendarContent ? (
+        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-12 text-center text-gray-400">加载日历中...</div>
+      ) : !hasCalendarContent ? (
         <div className="rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 p-12 text-center text-gray-400">
           <div className="text-4xl mb-2">📅</div>
           <div>该时段暂无时间记录</div>
         </div>
       ) : view === 'day' ? (
-        <DayView date={currentDate} entries={entries} externalEvents={externalEvents} now={now} onEntryClick={setSelectedEntry} />
+        <DayView
+          date={currentDate}
+          entries={visibleEntries}
+          dayMemos={memosByDay.get(startOfDay(currentDate).toISOString()) ?? []}
+          externalEvents={externalEvents}
+          now={now}
+          onEntryClick={setSelectedEntry}
+          onCreate={(start, end) => setQuickCreateForDate(start, start, end)}
+        />
       ) : view === 'week' ? (
-        <WeekView weekStart={startOfWeek(currentDate)} entries={entries} externalEvents={externalEvents} now={now} onEntryClick={setSelectedEntry} />
+        <WeekView
+          weekStart={startOfWeek(currentDate)}
+          selectedDate={currentDate}
+          entries={visibleEntries}
+          memosByDay={memosByDay}
+          externalEvents={externalEvents}
+          now={now}
+          dayTotal={dayTotal}
+          onEntryClick={setSelectedEntry}
+        />
       ) : (
         <MonthView
           date={currentDate}
-          entriesByDay={entriesByDay}
+           entriesByDay={entriesByDay}
+           memosByDay={memosByDay}
           externalEvents={externalEvents}
           dayTotal={dayTotal}
           onDayClick={(d) => setDayDetailDate(d)}
@@ -380,18 +521,32 @@ export default function CalendarPage() {
       )}
 
       {/* 条目详情弹窗 */}
-      {selectedEntry && <EntryDetail entry={selectedEntry} onClose={() => setSelectedEntry(null)} />}
+      {selectedEntry && (
+        <EntryDetail
+          entry={selectedEntry}
+          onClose={() => setSelectedEntry(null)}
+          onChanged={async () => {
+            setSelectedEntry(null)
+            const params = { from: range.from.toISOString(), to: range.to.toISOString() }
+            const [nextEntries, nextMemos] = await Promise.all([api.timer.list(params), api.memos.list(params)])
+            setEntries(nextEntries)
+            setMemos(nextMemos)
+          }}
+        />
+      )}
 
       {/* 日历同步弹窗 */}
       {showSyncModal && <CalendarSyncModal onClose={() => setShowSyncModal(false)} />}
 
       {/* 快速创建计时弹窗 */}
-      {showQuickCreate && (
+      {quickCreateDefaults && (
         <QuickCreateModal
-          defaultDate={currentDate}
-          onClose={() => setShowQuickCreate(false)}
+          defaultDate={quickCreateDefaults.date}
+          defaultStartTime={quickCreateDefaults.startTime}
+          defaultEndTime={quickCreateDefaults.endTime}
+          onClose={() => setQuickCreateDefaults(null)}
           onSaved={() => {
-            setShowQuickCreate(false)
+            setQuickCreateDefaults(null)
             api.timer.list({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setEntries).catch(() => {})
           }}
         />
@@ -404,32 +559,36 @@ export default function CalendarPage() {
       {dayDetailDate && (
         <DayDetailPopup
           date={dayDetailDate}
-          entries={entries}
+          entries={visibleEntries}
+          dayMemos={memosByDay.get(startOfDay(dayDetailDate).toISOString()) ?? []}
           externalEvents={externalEvents}
           onClose={() => setDayDetailDate(null)}
           onEntryClick={(e) => { setDayDetailDate(null); setSelectedEntry(e) }}
         />
       )}
 
-      {/* 沉浸式动态时间线 (Memos & 多媒体) */}
-      <TimelineSection />
     </div>
   )
 }
 
 // ===== 日视图 =====
 
-function DayView({ date, entries, externalEvents, now, onEntryClick }: {
+function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, onCreate }: {
   date: Date
   entries: TimeEntry[]
+  dayMemos: Memo[]
   externalEvents: CalendarEvent[]
   now: Date
   onEntryClick: (e: TimeEntry) => void
+  onCreate: (start: Date, end: Date) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const dayStart = startOfDay(date).getTime()
   const dayEnd = endOfDay(date).getTime()
   const layout = layoutEntries(entries, dayStart, dayEnd)
+  const countEntries = entries.filter((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), date))
+  const topExternal = externalEvents.filter((event) => externalEventOverlapsDay(event, dayStart, dayEnd))
+  const uniqueTopExternal = topExternal.filter((event, index, list) => list.findIndex((item) => item.summary === event.summary) === index)
 
   // 自动滚动到当前时间附近
   useEffect(() => {
@@ -441,41 +600,48 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
 
   const nowTop = isToday(date) ? (minutesFromStartOfDay(now) / 60) * HOUR_HEIGHT_DAY : -1
 
+  const handleTimelineDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('button')) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const scrollTop = scrollRef.current?.scrollTop ?? 0
+    const rawMinutes = ((event.clientY - rect.top + scrollTop) / HOUR_HEIGHT_DAY) * 60
+    const minutes = Math.min(23 * 60 + 45, Math.max(0, Math.round(rawMinutes / 15) * 15))
+    const start = new Date(date)
+    start.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0)
+    const end = new Date(start)
+    end.setMinutes(end.getMinutes() + 60)
+    onCreate(start, end)
+  }
+
   return (
     <div
       ref={scrollRef}
       className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-y-auto"
       style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
-      {/* 全天事件栏 */}
-      {(() => {
-        const dS = startOfDay(date).getTime()
-        const dE = endOfDay(date).getTime()
-        const dayExt = externalEvents.filter((ev) => {
-          const evS = new Date(ev.dtstart).getTime()
-          const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
-          return evS < dE && evE > dS
-        })
-        if (dayExt.length === 0) return null
-        const seen = new Set<string>()
-        const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
-        return (
-          <div className="flex border-b border-gray-200 dark:border-gray-800 px-2 py-1 gap-1 flex-wrap">
-            {unique.map((ev) => {
-              const color = ev.subscription?.color ?? '#2ecc71'
-              return (
-                <div
-                  key={ev.id}
-                  className="text-[10px] font-semibold text-white rounded px-2 py-0.5"
-                  style={{ backgroundColor: color }}
-                >
-                  {ev.summary}
-                </div>
-              )
-            })}
-          </div>
-        )
-      })()}
+      {/* 外部 ICS 事件和次数打卡栏，避免占用时间轴 */}
+      {(topExternal.length > 0 || countEntries.length > 0) && (
+        <div className="flex border-b border-gray-200 dark:border-gray-800 px-2 py-1 gap-1 flex-wrap">
+          {countEntries.map((entry) => (
+            <button
+              key={entry.id}
+              onClick={() => onEntryClick(entry)}
+              className="text-[10px] font-semibold rounded px-2 py-0.5 border border-dashed"
+              style={{ color: entry.tag?.color ?? '#6d5efc', borderColor: entry.tag?.color ?? '#6d5efc', backgroundColor: `${entry.tag?.color ?? '#6d5efc'}12` }}
+            >
+              ● {entry.tag?.name}
+            </button>
+          ))}
+          {uniqueTopExternal.map((event) => {
+            const color = event.subscription?.color ?? '#2ecc71'
+            return (
+              <div key={event.id} className="text-[10px] font-semibold text-white rounded px-2 py-0.5" style={{ backgroundColor: color }} title={event.summary}>
+                {formatExternalEventLabel(event)}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="flex">
         {/* 小时刻度 */}
@@ -491,7 +657,7 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
           ))}
         </div>
         {/* 时间线区域 */}
-        <div className="flex-1 relative" style={{ height: 24 * HOUR_HEIGHT_DAY }}>
+        <div className="flex-1 relative" style={{ height: 24 * HOUR_HEIGHT_DAY }} onDoubleClick={handleTimelineDoubleClick}>
           {/* 水平网格线 */}
           {Array.from({ length: 24 }, (_, h) => (
             <div key={h} className="border-t border-gray-100 dark:border-gray-800" style={{ height: HOUR_HEIGHT_DAY }} />
@@ -510,7 +676,7 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
               <button
                 key={entry.id}
                 onClick={() => onEntryClick(entry)}
-                className="absolute rounded-lg text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150 group"
+                className="absolute z-[1] rounded-lg text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150 group"
                 style={{
                   top: top + 1,
                   height: height - 2,
@@ -552,17 +718,32 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
           )}
         </div>
       </div>
+      {dayMemos.length > 0 && (
+        <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-3">
+          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">📝 当日记事 ({dayMemos.length})</div>
+          <div className="space-y-1">
+            {dayMemos.slice(0, 8).map((memo) => (
+              <div key={memo.id} className="text-xs text-gray-600 dark:text-gray-300 truncate">
+                {new Date(memo.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} · {memo.content}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 // ===== 周视图 =====
 
-function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
+function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents, now, dayTotal, onEntryClick }: {
   weekStart: Date
+  selectedDate: Date
   entries: TimeEntry[]
+  memosByDay: Map<string, Memo[]>
   externalEvents: CalendarEvent[]
   now: Date
+  dayTotal: (d: Date) => number
   onEntryClick: (e: TimeEntry) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -588,40 +769,51 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
         {days.map((d) => (
           <div key={d.toISOString()} className={`flex-1 text-center py-2 ${isToday(d) ? 'text-brand' : 'text-gray-500'}`}>
             <div className="text-xs">{WEEKDAYS[d.getDay() === 0 ? 6 : d.getDay() - 1]}</div>
-            <div className={`text-sm font-semibold ${isToday(d) ? 'bg-brand text-white rounded-full w-6 h-6 mx-auto flex items-center justify-center' : ''}`}>
+            <div className={`text-sm font-semibold w-6 h-6 mx-auto flex items-center justify-center rounded-full ${
+              isToday(d)
+                ? 'bg-brand text-white'
+                : isSameDay(d, selectedDate)
+                  ? 'border border-dashed border-brand text-brand'
+                  : ''
+            }`}>
               {d.getDate()}
             </div>
           </div>
         ))}
       </div>
 
-      {/* 全天事件栏（节假日等外部日历事件） */}
+      {/* 外部 ICS 事件栏（所有事件均置于时间轴顶部） */}
       {(() => {
-        const hasAnyExternal = days.some((d) => {
+        const hasTopContent = days.some((d) => {
           const dS = startOfDay(d).getTime()
           const dE = endOfDay(d).getTime()
-          return externalEvents.some((ev) => {
-            const evS = new Date(ev.dtstart).getTime()
-            const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
-            return evS < dE && evE > dS
-          })
+          const hasExternal = externalEvents.some((ev) => externalEventOverlapsDay(ev, dS, dE))
+          const hasCount = entries.some((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), d))
+          return hasExternal || hasCount
         })
-        if (!hasAnyExternal) return null
+        if (!hasTopContent) return null
         return (
           <div className="flex border-b border-gray-200 dark:border-gray-800">
             <div className="flex-shrink-0 w-10" />
             {days.map((d) => {
               const dS = startOfDay(d).getTime()
               const dE = endOfDay(d).getTime()
-              const dayExt = externalEvents.filter((ev) => {
-                const evS = new Date(ev.dtstart).getTime()
-                const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
-                return evS < dE && evE > dS
-              })
+              const dayExt = externalEvents.filter((ev) => externalEventOverlapsDay(ev, dS, dE))
+              const countEntries = entries.filter((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), d))
               const seen = new Set<string>()
               const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
               return (
                 <div key={d.toISOString()} className="flex-1 min-h-[24px] px-0.5 py-0.5 space-y-0.5">
+                  {countEntries.slice(0, 2).map((entry) => (
+                    <button
+                      key={entry.id}
+                      onClick={() => onEntryClick(entry)}
+                      className="w-full text-left text-[9px] font-semibold rounded px-1 py-0.5 border border-dashed truncate"
+                      style={{ color: entry.tag?.color ?? '#6d5efc', borderColor: entry.tag?.color ?? '#6d5efc', backgroundColor: `${entry.tag?.color ?? '#6d5efc'}12` }}
+                    >
+                      ● {entry.tag?.name}
+                    </button>
+                  ))}
                   {unique.slice(0, 2).map((ev) => {
                     const color = ev.subscription?.color ?? '#2ecc71'
                     return (
@@ -631,7 +823,7 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
                         style={{ backgroundColor: color }}
                         title={ev.summary}
                       >
-                        {ev.summary}
+                        {formatExternalEventLabel(ev)}
                       </div>
                     )
                   })}
@@ -656,18 +848,17 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
           ))}
         </div>
         {/* 7天列 */}
-        {days.map((d) => {
-          const dayStart = startOfDay(d).getTime()
-          const dayEnd = endOfDay(d).getTime()
+          {days.map((d) => {
+            const dayStart = startOfDay(d).getTime()
+            const dayEnd = endOfDay(d).getTime()
           const dayEntries = entries.filter((e) => {
             const es = new Date(e.startTime).getTime()
             const ee = e.endTime ? new Date(e.endTime).getTime() : Date.now()
             // 计时与该天有重叠即显示（支持跨午夜）
             return es < dayEnd && ee > dayStart
           })
-          const layout = layoutEntries(dayEntries, dayStart, dayEnd)
-          const showNowLine = isToday(d)
-
+            const layout = layoutEntries(dayEntries, dayStart, dayEnd)
+            const showNowLine = isToday(d)
           return (
             <div
               key={d.toISOString()}
@@ -692,7 +883,7 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
                   <button
                     key={entry.id}
                     onClick={() => onEntryClick(entry)}
-                    className="absolute rounded-md text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150"
+                    className="absolute z-[1] rounded-md text-left overflow-hidden hover:z-10 hover:shadow-md transition-all duration-150"
                     style={{
                       top: top + 1,
                       height: height - 2,
@@ -721,15 +912,29 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
           )
         })}
       </div>
+      <div className="flex border-t border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-800/30">
+        <div className="flex-shrink-0 w-10" />
+        {days.map((d) => {
+          const dayMemos = memosByDay.get(startOfDay(d).toISOString()) ?? []
+          const total = dayTotal(d)
+          return (
+            <div key={d.toISOString()} className="flex-1 min-w-0 px-1 py-1 text-center text-[9px] text-gray-400 truncate">
+              {total > 0 && <span className="font-mono">{formatDuration(total)}</span>}
+              {dayMemos.length > 0 && <span className="ml-1">📝{dayMemos.length}</span>}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
 // ===== 月视图 =====
 
-function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }: {
+function MonthView({ date, entriesByDay, memosByDay, externalEvents, dayTotal, onDayClick }: {
   date: Date
   entriesByDay: Map<string, TimeEntry[]>
+  memosByDay: Map<string, Memo[]>
   externalEvents: CalendarEvent[]
   dayTotal: (d: Date) => number
   onDayClick: (d: Date) => void
@@ -758,6 +963,7 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
           const key = startOfDay(d).toISOString()
           const dayEntries = entriesByDay.get(key) ?? []
           const total = dayTotal(d)
+          const dayMemos = memosByDay.get(key) ?? []
           const inMonth = isSameMonth(d, date)
           const today = isToday(d)
           const uniqueColors = getUniqueColors(dayEntries)
@@ -790,15 +996,11 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                   ))}
                 </div>
               )}
-              {/* 外部日历事件 — 彩色横条 banner */}
+              {/* 全天外部事件 — 彩色横条 banner */}
               {(() => {
                 const dayExtStart = startOfDay(d).getTime()
                 const dayExtEnd = endOfDay(d).getTime()
-                const dayExt = externalEvents.filter((ev) => {
-                  const evS = new Date(ev.dtstart).getTime()
-                  const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
-                  return evS < dayExtEnd && evE > dayExtStart
-                })
+                const dayExt = externalEvents.filter((ev) => externalEventOverlapsDay(ev, dayExtStart, dayExtEnd))
                 if (dayExt.length === 0) return null
                 // 去重：同名事件只显示一个
                 const seen = new Set<string>()
@@ -814,7 +1016,7 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                           style={{ backgroundColor: color }}
                           title={ev.summary}
                         >
-                          {ev.summary}
+                          {formatExternalEventLabel(ev)}
                         </div>
                       )
                     })}
@@ -825,7 +1027,7 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                 )
               })()}
               <div className="space-y-px">
-                {dayEntries.slice(0, 2).map((e) => (
+                {dayEntries.slice(0, 3).map((e) => (
                   <div
                     key={e.id}
                     className="text-[9px] truncate rounded px-1 py-px leading-tight font-medium"
@@ -837,10 +1039,13 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
                     {e.tag?.name}
                   </div>
                 ))}
-                {dayEntries.length > 2 && (
-                  <div className="text-[9px] text-gray-400 px-1">+{dayEntries.length - 2}</div>
+                {dayEntries.length > 3 && (
+                  <div className="text-[9px] text-gray-400 px-1">+{dayEntries.length - 3}</div>
                 )}
               </div>
+              {dayMemos.length > 0 && (
+                <div className="text-[9px] text-gray-500 dark:text-gray-400 mt-1 truncate">📝 {dayMemos.length}</div>
+              )}
             </button>
           )
         })}
@@ -851,15 +1056,57 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
 
 // ===== 条目详情弹窗 =====
 
-function EntryDetail({ entry, onClose }: {
+function EntryDetail({ entry, onClose, onChanged }: {
   entry: TimeEntry
   onClose: () => void
+  onChanged: () => void | Promise<void>
 }) {
   const start = new Date(entry.startTime)
   const end = entry.endTime ? new Date(entry.endTime) : new Date()
   const duration = end.getTime() - start.getTime()
   const color = entry.tag?.color ?? '#6d5efc'
   const memos = entry.memos ?? []
+  const [editing, setEditing] = useState(false)
+  const [editStart, setEditStart] = useState(toLocalInputWithSeconds(start))
+  const [editEnd, setEditEnd] = useState(entry.endTime ? toLocalInputWithSeconds(new Date(entry.endTime)) : '')
+  const [editNote, setEditNote] = useState(entry.note ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const saveEdit = async () => {
+    const startIso = toIsoSafe(editStart)
+    const endIso = editEnd ? toIsoSafe(editEnd) : null
+    if (!startIso || (editEnd && !endIso)) {
+      setError('请选择有效的起止时间')
+      return
+    }
+    if (endIso && new Date(endIso) <= new Date(startIso)) {
+      setError('结束时间必须晚于开始时间')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await api.timer.update(entry.id, { startTime: startIso, endTime: endIso, note: editNote })
+      await onChanged()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeEntry = async () => {
+    if (!confirm('确定要删除这条时间记录吗？')) return
+    setSaving(true)
+    try {
+      await api.timer.remove(entry.id)
+      await onChanged()
+    } catch (err) {
+      setError((err as Error).message)
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
@@ -875,7 +1122,23 @@ function EntryDetail({ entry, onClose }: {
             )}
           </div>
         </div>
-        <div className="space-y-2.5 text-sm mb-4">
+        {editing ? (
+          <div className="space-y-3 mb-4">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">开始时间</label>
+              <DateTimeSecondPicker value={editStart} onChange={setEditStart} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">结束时间（留空表示进行中）</label>
+              <DateTimeSecondPicker value={editEnd} onChange={setEditEnd} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">备注</label>
+              <textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={3} className="input text-sm" />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2.5 text-sm mb-4">
           <div className="flex justify-between items-center">
             <span className="text-gray-400 text-xs">开始</span>
             <span className="text-gray-700 dark:text-gray-200">{start.toLocaleString('zh-CN', { hour12: false })}</span>
@@ -900,7 +1163,8 @@ function EntryDetail({ entry, onClose }: {
               <div className="text-gray-700 dark:text-gray-200 text-sm leading-relaxed">{entry.note}</div>
             </div>
           )}
-        </div>
+          </div>
+        )}
         {memos.length > 0 && (
           <div className="border-t border-gray-100 dark:border-gray-800 pt-3 mb-4">
             <div className="text-xs text-gray-400 mb-2">📖 关联记事 ({memos.length})</div>
@@ -916,406 +1180,20 @@ function EntryDetail({ entry, onClose }: {
             </div>
           </div>
         )}
-        <button
-          onClick={onClose}
-          className="w-full py-2.5 rounded-xl text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-        >
-          关闭
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ===== 动态时间线 (Timeline Section) =====
-function TimelineSection() {
-  const [days, setDays] = useState<number>(0) // 0 = 全部
-  const [memos, setMemos] = useState<Memo[]>([])
-  const [loading, setLoading] = useState(false)
-  const [previewImage, setPreviewImage] = useState<string | null>(null)
-  const [activeAddModalEntry, setActiveAddModalEntry] = useState<TimeEntry | null>(null)
-  const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
-  const [showNewJournalModal, setShowNewJournalModal] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-
-  const loadMemos = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.memos.list(days > 0 ? { days } : {})
-      setMemos(data)
-    } catch (e) {
-      setMemos([])
-    } finally {
-      setLoading(false)
-    }
-  }, [days])
-
-  useEffect(() => {
-    loadMemos()
-  }, [loadMemos])
-
-  // 搜索过滤：只展示日记/随手记，严格排除打点/点记录（type === 'point'）
-  const filteredMemos = useMemo(() => {
-    const diaryOnlyMemos = memos.filter((m) => m.type !== 'point')
-    if (!searchQuery) return diaryOnlyMemos
-    const q = searchQuery.toLowerCase()
-    return diaryOnlyMemos.filter((m) => {
-      const content = m.content?.toLowerCase() ?? ''
-      const tagName = (m.tag?.name ?? m.timeEntry?.tag?.name ?? '').toLowerCase()
-      return content.includes(q) || tagName.includes(q)
-    })
-  }, [memos, searchQuery])
-
-  return (
-    <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-800 space-y-4">
-      {/* 标题与切片选择器 */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-bold flex items-center gap-2">
-            <span>📖 动态时间线 · 日记/随手记</span>
-          </h2>
-          <button
-            onClick={() => setShowNewJournalModal(true)}
-            className="px-3 py-1 rounded-lg bg-brand text-white text-xs font-medium hover:bg-brand-600 transition-colors flex items-center gap-1 shadow-xs"
-          >
-            <span>✍️ + 写日记</span>
-          </button>
-          {/* 搜索框 */}
-          <div className="relative">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索日记…"
-              className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-32 focus:w-44 transition-all focus:outline-none focus:border-brand"
-            />
-            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 text-xs font-medium">
-          {([0, 1, 7, 30] as const).map((d) => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-3 py-1 rounded-md transition-colors ${
-                days === d
-                  ? 'bg-white dark:bg-gray-700 text-brand shadow-sm font-semibold'
-                  : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              {d === 0 ? '全部' : d === 1 ? '今天' : d === 7 ? '本周' : '本月'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* 动态卡片时间轴流 */}
-      {loading ? (
-        <div className="text-center py-8 text-gray-400 text-sm">加载时间线...</div>
-      ) : filteredMemos.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-gray-200 dark:border-gray-800 p-8 text-center text-gray-400 text-sm">
-          {searchQuery
-            ? '未找到匹配的日记'
-            : days === 0
-              ? '暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！'
-              : `近 ${days === 1 ? '1 天' : `${days} 天`} 暂无记事日志。在计时界面点击「📝 记事」即可记录感悟和照片！`}
-        </div>
-      ) : (
-        <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-200 dark:before:bg-gray-800">
-          {filteredMemos.map((memo) => {
-            const timeStr = new Date(memo.createdAt).toLocaleString('zh-CN', {
-              month: 'numeric',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })
-            const tagColor = memo.tag?.color ?? memo.timeEntry?.tag?.color ?? '#6d5efc'
-            const tagName = memo.tag?.name ?? memo.timeEntry?.tag?.name ?? '随手记'
-            const categoryName = memo.tag?.category?.name ?? memo.timeEntry?.tag?.category?.name
-
-            const images = memo.attachments?.filter((a) => a.mimeType.startsWith('image/')) ?? []
-            const videos = memo.attachments?.filter((a) => a.mimeType.startsWith('video/')) ?? []
-
-            return (
-              <div key={memo.id} className="relative group">
-                {/* 时间轴锚点 */}
-                <div
-                  className="absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900"
-                  style={{ background: tagColor }}
-                />
-
-                {/* 内容卡片 */}
-                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4 space-y-3 shadow-sm hover:shadow transition-shadow">
-                  {/* 头部：勾稽计时与标签 */}
-                  <div className="flex items-center justify-between text-xs text-gray-400 flex-wrap gap-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-gray-700 dark:text-gray-200">{timeStr}</span>
-                      <span
-                        className="px-2 py-0.5 rounded-full font-medium"
-                        style={{ backgroundColor: `${tagColor}20`, color: tagColor }}
-                      >
-                        {categoryName ? `${categoryName} / ` : ''}{tagName}
-                      </span>
-                      {memo.timeEntry && (
-                        <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
-                          ⏱ 关联计时: {formatDuration(
-                            (memo.timeEntry.endTime
-                              ? new Date(memo.timeEntry.endTime).getTime()
-                              : Date.now()) - new Date(memo.timeEntry.startTime).getTime()
-                          )}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setEditingMemo(memo)}
-                        className="text-gray-300 hover:text-brand opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        编辑
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (!confirm('确定要删除这条记事吗？')) return
-                          await api.memos.remove(memo.id)
-                          loadMemos()
-                        }}
-                        className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 文本内容 */}
-                  <div className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
-                    {memo.content}
-                  </div>
-
-                  {/* 图片展示 (网格) */}
-                  {images.length > 0 && (
-                    <div className={`grid gap-2 ${images.length === 1 ? 'grid-cols-1 max-w-sm' : images.length === 2 ? 'grid-cols-2 max-w-md' : 'grid-cols-3 max-w-lg'}`}>
-                      {images.map((img) => (
-                        <button
-                          key={img.id}
-                          type="button"
-                          onClick={() => setPreviewImage(resolveUploadUrl(img.path))}
-                          className="rounded-lg overflow-hidden border border-gray-100 dark:border-gray-800 bg-gray-100 dark:bg-gray-800 aspect-square group/img relative"
-                        >
-                          <img
-                            src={resolveUploadUrl(img.path)}
-                            alt={img.filename}
-                            className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 视频播放器 */}
-                  {videos.length > 0 && (
-                    <div className="space-y-2 max-w-md pt-1">
-                      {videos.map((vid) => (
-                        <div key={vid.id} className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 bg-black">
-                          <video
-                            src={resolveUploadUrl(vid.path)}
-                            controls
-                            playsInline
-                            className="w-full max-h-64 object-contain"
-                          />
-                          <div className="text-[10px] text-gray-400 px-2 py-1 bg-gray-900 truncate">
-                            🎬 {vid.filename}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* 大图全屏预览弹窗 */}
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setPreviewImage(null)}
-        >
-          <img src={previewImage} alt="全屏预览" className="max-w-full max-h-full rounded-lg object-contain" />
-        </div>
-      )}
-
-      {/* 弹窗添加记事 */}
-      {activeAddModalEntry && (
-        <MemoCreateModal
-          entry={activeAddModalEntry}
-          onClose={() => setActiveAddModalEntry(null)}
-          onSaved={() => {
-            setActiveAddModalEntry(null)
-            loadMemos()
-          }}
-        />
-      )}
-
-      {/* 编辑记事弹窗 */}
-      {editingMemo && (
-        <MemoEditModal
-          memo={editingMemo}
-          onClose={() => setEditingMemo(null)}
-          onSaved={() => {
-            setEditingMemo(null)
-            loadMemos()
-          }}
-        />
-      )}
-
-      {/* 新建独立日记弹窗 */}
-      {showNewJournalModal && (
-        <NewJournalModal
-          onClose={() => setShowNewJournalModal(false)}
-          onSaved={() => {
-            setShowNewJournalModal(false)
-            loadMemos()
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-function toLocalInputWithSeconds(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-function NewJournalModal({
-  onClose,
-  onSaved,
-}: {
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const { tags } = useStore()
-  const [content, setContent] = useState('')
-  const [tagId, setTagId] = useState<string>('')
-  const [memoTime, setMemoTime] = useState(toLocalInputWithSeconds(new Date()))
-  const [uploading, setUploading] = useState(false)
-  const [attachments, setAttachments] = useState<{ filename: string; path: string; mimeType: string; size: number }[]>([])
-  const [error, setError] = useState('')
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
-    setUploading(true)
-    setError('')
-    try {
-      const results = await Promise.all(Array.from(files).map((f) => api.memos.upload(f)))
-      setAttachments((prev) => [...prev, ...results])
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setUploading(false)
-      e.target.value = ''
-    }
-  }
-
-  const save = async () => {
-    if (!content.trim() && attachments.length === 0) {
-      setError('请输入日记内容或上传图片/视频')
-      return
-    }
-    const memoIso = toIsoSafe(memoTime)
-    if (!memoIso) {
-      setError('请选择有效的日记时间')
-      return
-    }
-    setError('')
-    try {
-      await api.memos.create({
-        content: content.trim() || '（无文字随记）',
-        type: 'diary',
-        tagId: tagId || undefined,
-        createdAt: memoIso,
-        attachments,
-      })
-      onSaved()
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">✍️ 新建日记 / 随手记</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 mb-1">日记时间 (精准到秒)</label>
-          <DateTimeSecondPicker value={memoTime} onChange={setMemoTime} />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 mb-1">关联标签 (可选)</label>
-          <select value={tagId} onChange={(e) => setTagId(e.target.value)} className="input text-sm">
-            <option value="">独立日记 (不绑定标签)</option>
-            {tags.map((t) => (
-              <option key={t.id} value={t.id}>{t.icon ? `${t.icon} ` : ''}{t.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 mb-1">日记内容 / 感悟与照片</label>
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={4}
-            placeholder="写下今天的想法、生活随笔、感悟或日志..."
-            className="input"
-            autoFocus
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 mb-1">图片 / 视频附件</label>
-          <input
-            type="file"
-            accept="image/*,video/*"
-            multiple
-            onChange={handleFileUpload}
-            disabled={uploading}
-            className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-50 file:text-brand dark:file:bg-brand-900/40 dark:file:text-brand-300 hover:file:bg-brand-100"
-          />
-          {uploading && <div className="text-xs text-brand mt-1">上传中...</div>}
-        </div>
-
-        {attachments.length > 0 && (
-          <div className="grid grid-cols-3 gap-2 pt-1">
-            {attachments.map((att, idx) => (
-              <div key={idx} className="relative rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 h-16 flex items-center justify-center">
-                {att.mimeType.startsWith('image/') ? (
-                  <img src={resolveUploadUrl(att.path)} alt={att.filename} className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-sm">🎬 视频</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {error && <div className="text-xs text-red-500">{error}</div>}
-
-        <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
-            取消
-          </button>
-          <button onClick={save} className="px-4 py-2 rounded-lg text-sm bg-brand text-white hover:bg-brand-600 font-medium">
-            保存日记
-          </button>
+        {error && <div className="text-xs text-red-500 mb-3">{error}</div>}
+        <div className="flex gap-2">
+          {editing ? (
+            <>
+              <button onClick={() => { setEditing(false); setError('') }} className="flex-1 py-2.5 rounded-xl text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">取消</button>
+              <button onClick={saveEdit} disabled={saving} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-brand text-white hover:bg-brand-600 disabled:opacity-50">{saving ? '保存中...' : '保存修改'}</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">关闭</button>
+              <button onClick={() => setEditing(true)} className="px-3 py-2.5 rounded-xl text-sm text-brand hover:bg-brand-50 dark:hover:bg-brand-900/30">编辑</button>
+              <button onClick={removeEntry} disabled={saving} className="px-3 py-2.5 rounded-xl text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">删除</button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1324,18 +1202,32 @@ function NewJournalModal({
 
 // ===== 快速创建计时弹窗 =====
 
-function QuickCreateModal({ defaultDate, onClose, onSaved }: {
+function QuickCreateModal({ defaultDate, defaultStartTime, defaultEndTime, onClose, onSaved }: {
   defaultDate: Date
+  defaultStartTime?: Date
+  defaultEndTime?: Date
   onClose: () => void
   onSaved: () => void
 }) {
   const { tags, categories } = useStore()
+  const [todos, setTodos] = useState<Todo[]>([])
   const [tagId, setTagId] = useState<string>('')
+  const [todoId, setTodoId] = useState<string>('')
   const [note, setNote] = useState('')
-  const [startTime, setStartTime] = useState(toLocalInputWithSeconds(new Date()))
-  const [endTime, setEndTime] = useState('')
+  const initialStartTime = defaultStartTime ?? (() => {
+    const date = new Date(defaultDate)
+    if (isSameDay(date, new Date())) return new Date()
+    date.setHours(9, 0, 0, 0)
+    return date
+  })()
+  const [startTime, setStartTime] = useState(toLocalInputWithSeconds(initialStartTime))
+  const [endTime, setEndTime] = useState(defaultEndTime ? toLocalInputWithSeconds(defaultEndTime) : '')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.todos.list({ status: 'pending' }).then(setTodos).catch(() => setTodos([]))
+  }, [])
 
   const groupedTags = useMemo(() => {
     const groups = new Map<string, { category: typeof categories[0] | null; tags: typeof tags }>()
@@ -1360,9 +1252,9 @@ function QuickCreateModal({ defaultDate, onClose, onSaved }: {
       if (endTime) {
         const endIso = toIsoSafe(endTime)
         if (!endIso) { setError('结束时间无效'); setSaving(false); return }
-        await api.timer.manual({ tagId, startTime: startIso, endTime: endIso, note: note || undefined })
+        await api.timer.manual({ tagId, startTime: startIso, endTime: endIso, note: note || undefined, todoId: todoId || undefined })
       } else {
-        await api.timer.start({ tagId, note: note || undefined })
+        await api.timer.start({ tagId, note: note || undefined, todoId: todoId || undefined })
       }
       onSaved()
     } catch (err) {
@@ -1438,6 +1330,14 @@ function QuickCreateModal({ defaultDate, onClose, onSaved }: {
           />
         </div>
 
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1">关联待办（可选）</label>
+          <select value={todoId} onChange={(event) => setTodoId(event.target.value)} className="input text-sm">
+            <option value="">不关联待办</option>
+            {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+          </select>
+        </div>
+
         {error && <div className="text-xs text-red-500">{error}</div>}
 
         <div className="flex justify-end gap-2 pt-1">
@@ -1459,9 +1359,10 @@ function QuickCreateModal({ defaultDate, onClose, onSaved }: {
 
 // ===== 月视图点击日期详情弹窗 =====
 
-function DayDetailPopup({ date, entries, externalEvents, onClose, onEntryClick }: {
+function DayDetailPopup({ date, entries, dayMemos, externalEvents, onClose, onEntryClick }: {
   date: Date
   entries: TimeEntry[]
+  dayMemos: Memo[]
   externalEvents: CalendarEvent[]
   onClose: () => void
   onEntryClick: (e: TimeEntry) => void
@@ -1475,18 +1376,15 @@ function DayDetailPopup({ date, entries, externalEvents, onClose, onEntryClick }
     return es < dayEnd && ee > dayStart
   }).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
 
-  const dayExternal = externalEvents.filter((ev) => {
-    const evS = new Date(ev.dtstart).getTime()
-    const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
-    return evS < dayEnd && evE > dayStart
-  })
+  const dayExternal = externalEvents.filter((ev) => externalEventOverlapsDay(ev, dayStart, dayEnd))
   const seenExt = new Set<string>()
   const uniqueExternal = dayExternal.filter((e) => { if (seenExt.has(e.summary)) return false; seenExt.add(e.summary); return true })
 
   const lunarText = getLunarText(date)
   const totalMs = dayEntries.reduce((sum, e) => {
-    const end = e.endTime ? new Date(e.endTime).getTime() : Date.now()
-    return sum + (end - new Date(e.startTime).getTime())
+    const start = Math.max(new Date(e.startTime).getTime(), dayStart)
+    const end = Math.min(e.endTime ? new Date(e.endTime).getTime() : Date.now(), dayEnd)
+    return sum + Math.max(0, end - start)
   }, 0)
 
   const weekDay = WEEKDAYS_FULL[date.getDay() === 0 ? 6 : date.getDay() - 1]
@@ -1519,13 +1417,23 @@ function DayDetailPopup({ date, entries, externalEvents, onClose, onEntryClick }
                 return (
                   <div key={ev.id} className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-                    <span className="text-xs font-medium" style={{ color }}>{ev.summary}</span>
+                    <span className="text-xs font-medium" style={{ color }}>{formatExternalEventLabel(ev)}</span>
                   </div>
                 )
               })}
             </div>
           )}
-          {dayEntries.length === 0 && uniqueExternal.length === 0 ? (
+          {dayMemos.length > 0 && (
+            <div className="space-y-1 mb-3">
+              <div className="text-[10px] text-gray-400">📝 当日记事 ({dayMemos.length})</div>
+              {dayMemos.slice(0, 5).map((memo) => (
+                <div key={memo.id} className="text-xs text-gray-600 dark:text-gray-300 truncate">
+                  {new Date(memo.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} · {memo.content}
+                </div>
+              ))}
+            </div>
+          )}
+          {dayEntries.length === 0 && uniqueExternal.length === 0 && dayMemos.length === 0 ? (
             <div className="text-center py-6 text-gray-400 text-sm">当日暂无记录</div>
           ) : dayEntries.length === 0 ? (
             <div className="text-center py-4 text-gray-400 text-xs">暂无计时记录</div>

@@ -697,7 +697,7 @@ function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: 
         </button>
       </div>
       {/* 按钮行：点记录 / 记日记 / 停止 */}
-      <div className="flex justify-center items-center gap-3">
+      <div className="flex justify-center items-center gap-3 flex-wrap">
         <button
           type="button"
           onClick={onAddPointRecord}

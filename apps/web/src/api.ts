@@ -104,7 +104,7 @@ export const api = {
       return req<TimeEntry[]>(`/timer?${q}`)
     },
     remove: (id: string) => req(`/timer/${id}`, { method: 'DELETE' }),
-    manual: (data: { tagId: string; startTime: string; endTime: string; note?: string }) =>
+    manual: (data: { tagId: string; startTime: string; endTime: string; note?: string; todoId?: string }) =>
       req<TimeEntry>('/timer/manual', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { startTime?: string; endTime?: string | null; note?: string; tagId?: string }) =>
       req<TimeEntry>(`/timer/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
