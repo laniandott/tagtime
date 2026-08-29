@@ -193,16 +193,18 @@ export default function TimerPage() {
               )}
             </div>
           </div>
-          {running.map((entry) => (
-            <RunningTimer
-              key={entry.id}
-              entry={entry}
-              stopping={stoppingId === entry.id}
-              onStop={(note) => handleStop(entry.id, note)}
-              onAddMemo={() => setMemoTargetEntry(entry)}
-              onAddPointRecord={() => setPointTargetEntry(entry)}
-            />
-          ))}
+          <div className={`grid gap-3 ${running.length >= 2 ? 'grid-cols-1 sm:grid-cols-2' : ''}`}>
+            {running.map((entry) => (
+              <RunningTimer
+                key={entry.id}
+                entry={entry}
+                stopping={stoppingId === entry.id}
+                onStop={(note) => handleStop(entry.id, note)}
+                onAddMemo={() => setMemoTargetEntry(entry)}
+                onAddPointRecord={() => setPointTargetEntry(entry)}
+              />
+            ))}
+          </div>
         </div>
       ) : (
         <div className="rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-gray-400">
