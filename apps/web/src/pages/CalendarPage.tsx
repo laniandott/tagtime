@@ -7,6 +7,18 @@ import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 import { CalendarSyncModal } from '../components/CalendarSyncModal'
 import { SubscriptionManager } from '../components/SubscriptionManager'
 import type { CalendarEvent } from '../types'
+import { Solar } from 'lunar-javascript'
+
+// 农历工具：公历转农历
+function getLunarText(d: Date): string {
+  const solar = Solar.fromDate(d)
+  const lunar = solar.getLunar()
+  // 初一显示月份，否则显示日期
+  if (lunar.getDay() === 1) {
+    return lunar.getMonth() > 0 ? `${lunar.getMonth()}月` : `闰${-lunar.getMonth()}月`
+  }
+  return lunar.getDayInChinese()
+}
 
 // ===== 日期工具函数 =====
 
@@ -172,6 +184,7 @@ export default function CalendarPage() {
   const [showQuickCreate, setShowQuickCreate] = useState(false)
   const [showSubManager, setShowSubManager] = useState(false)
   const [externalEvents, setExternalEvents] = useState<CalendarEvent[]>([])
+  const [dayDetailDate, setDayDetailDate] = useState<Date | null>(null) // 月视图点击日期弹窗
   const [now, setNow] = useState(new Date())
 
   // 每分钟更新当前时间（用于"现在"指示线）
@@ -306,7 +319,7 @@ export default function CalendarPage() {
           >
             今天
           </button>
-          <h1 className="text-xl font-semibold ml-2 text-gray-800 dark:text-gray-100">{title}</h1>
+          <h1 className="text-lg sm:text-xl font-semibold ml-2 text-gray-800 dark:text-gray-100 truncate">{title}</h1>
         </div>
         <div className="flex items-center gap-2">
           {periodTotal > 0 && (
@@ -362,7 +375,7 @@ export default function CalendarPage() {
           entriesByDay={entriesByDay}
           externalEvents={externalEvents}
           dayTotal={dayTotal}
-          onDayClick={(d) => { setCurrentDate(d); setView('day') }}
+          onDayClick={(d) => setDayDetailDate(d)}
         />
       )}
 
@@ -385,9 +398,18 @@ export default function CalendarPage() {
       )}
 
       {/* 外部日历订阅管理弹窗 */}
-      {showSubManager && <SubscriptionManager onClose={() => { setShowSubManager(false); // 重新加载外部事件
-        api.calendars.events({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setExternalEvents).catch(() => {})
-      }} />}
+      {showSubManager && <SubscriptionManager onClose={() => { setShowSubManager(false); api.calendars.events({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setExternalEvents).catch(() => {}) }} />}
+
+      {/* 月视图点击日期详情弹窗 */}
+      {dayDetailDate && (
+        <DayDetailPopup
+          date={dayDetailDate}
+          entries={entries}
+          externalEvents={externalEvents}
+          onClose={() => setDayDetailDate(null)}
+          onEntryClick={(e) => { setDayDetailDate(null); setSelectedEntry(e) }}
+        />
+      )}
 
       {/* 沉浸式动态时间线 (Memos & 多媒体) */}
       <TimelineSection />
@@ -423,7 +445,7 @@ function DayView({ date, entries, externalEvents, now, onEntryClick }: {
     <div
       ref={scrollRef}
       className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-y-auto"
-      style={{ maxHeight: 'calc(100vh - 220px)' }}
+      style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
       {/* 全天事件栏 */}
       {(() => {
@@ -558,7 +580,7 @@ function WeekView({ weekStart, entries, externalEvents, now, onEntryClick }: {
     <div
       ref={scrollRef}
       className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-y-auto"
-      style={{ maxHeight: 'calc(100vh - 220px)' }}
+      style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
       {/* 星期表头 */}
       <div className="flex sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
@@ -746,14 +768,17 @@ function MonthView({ date, entriesByDay, externalEvents, dayTotal, onDayClick }:
               onClick={() => onDayClick(d)}
               className={`min-h-[100px] border-r border-b border-gray-100 dark:border-gray-800 p-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group ${!inMonth ? 'opacity-30' : ''}`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className={`text-xs font-semibold w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
-                  today
-                    ? 'bg-brand text-white'
-                    : 'text-gray-600 dark:text-gray-400 group-hover:bg-gray-200 dark:group-hover:bg-gray-700'
-                }`}>
-                  {d.getDate()}
-                </span>
+              <div className="flex items-center justify-between mb-0.5">
+                <div className="flex items-center gap-1">
+                  <span className={`text-xs font-semibold w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
+                    today
+                      ? 'bg-brand text-white'
+                      : 'text-gray-600 dark:text-gray-400 group-hover:bg-gray-200 dark:group-hover:bg-gray-700'
+                  }`}>
+                    {d.getDate()}
+                  </span>
+                  <span className="text-[9px] text-gray-400">{getLunarText(d)}</span>
+                </div>
                 {total > 0 && (
                   <span className="text-[10px] text-gray-400 font-mono">{formatDuration(total)}</span>
                 )}
@@ -1425,6 +1450,120 @@ function QuickCreateModal({ defaultDate, onClose, onSaved }: {
             className="px-5 py-2 rounded-xl text-sm bg-brand text-white hover:bg-brand-600 font-medium transition-colors disabled:opacity-50"
           >
             {saving ? '创建中…' : endTime ? '📥 补录' : '▶️ 开始计时'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===== 月视图点击日期详情弹窗 =====
+
+function DayDetailPopup({ date, entries, externalEvents, onClose, onEntryClick }: {
+  date: Date
+  entries: TimeEntry[]
+  externalEvents: CalendarEvent[]
+  onClose: () => void
+  onEntryClick: (e: TimeEntry) => void
+}) {
+  const dayStart = startOfDay(date).getTime()
+  const dayEnd = endOfDay(date).getTime()
+
+  const dayEntries = entries.filter((e) => {
+    const es = new Date(e.startTime).getTime()
+    const ee = e.endTime ? new Date(e.endTime).getTime() : Date.now()
+    return es < dayEnd && ee > dayStart
+  }).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+
+  const dayExternal = externalEvents.filter((ev) => {
+    const evS = new Date(ev.dtstart).getTime()
+    const evE = ev.dtend ? new Date(ev.dtend).getTime() : evS + 3600000
+    return evS < dayEnd && evE > dayStart
+  })
+  const seenExt = new Set<string>()
+  const uniqueExternal = dayExternal.filter((e) => { if (seenExt.has(e.summary)) return false; seenExt.add(e.summary); return true })
+
+  const lunarText = getLunarText(date)
+  const totalMs = dayEntries.reduce((sum, e) => {
+    const end = e.endTime ? new Date(e.endTime).getTime() : Date.now()
+    return sum + (end - new Date(e.startTime).getTime())
+  }, 0)
+
+  const weekDay = WEEKDAYS_FULL[date.getDay() === 0 ? 6 : date.getDay() - 1]
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-sm mx-4 shadow-xl max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 pt-5 pb-3 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold">{date.getMonth() + 1}月{date.getDate()}日</span>
+                <span className="text-sm text-gray-400">{weekDay}</span>
+              </div>
+              <div className="text-xs text-gray-400 mt-0.5">农历{lunarText}</div>
+            </div>
+            <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">✕</button>
+          </div>
+          {totalMs > 0 && (
+            <div className="text-xs text-gray-400 mt-2">
+              当日合计 <span className="font-mono font-medium text-brand">{formatDuration(totalMs)}</span> · {dayEntries.length} 条记录
+            </div>
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+          {uniqueExternal.length > 0 && (
+            <div className="space-y-1 mb-3">
+              {uniqueExternal.map((ev) => {
+                const color = ev.subscription?.color ?? '#2ecc71'
+                return (
+                  <div key={ev.id} className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                    <span className="text-xs font-medium" style={{ color }}>{ev.summary}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {dayEntries.length === 0 && uniqueExternal.length === 0 ? (
+            <div className="text-center py-6 text-gray-400 text-sm">当日暂无记录</div>
+          ) : dayEntries.length === 0 ? (
+            <div className="text-center py-4 text-gray-400 text-xs">暂无计时记录</div>
+          ) : (
+            <div className="space-y-1">
+              {dayEntries.map((e) => {
+                const start = new Date(e.startTime)
+                const end = e.endTime ? new Date(e.endTime) : null
+                const color = e.tag?.color ?? '#6d5efc'
+                const dur = end ? end.getTime() - start.getTime() : Date.now() - start.getTime()
+                return (
+                  <button
+                    key={e.id}
+                    onClick={() => onEntryClick(e)}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors text-left group"
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold" style={{ color }}>{e.tag?.name}</span>
+                        {e.tag?.category && <span className="text-[9px] text-gray-400">{e.tag.category.name}</span>}
+                      </div>
+                      <div className="text-[10px] text-gray-400">
+                        {start.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                        {end && ` - ${end.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`}
+                        {e.note && ` · ${e.note}`}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-gray-400">{formatDuration(dur)}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800">
+          <button onClick={onClose} className="w-full py-2 rounded-xl text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+            关闭
           </button>
         </div>
       </div>
