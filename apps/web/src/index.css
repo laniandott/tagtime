@@ -9,10 +9,6 @@
 
 body {
   margin: 0;
-  /* env(safe-area-inset-*) 在 Android WebView 下通常为 0，作为安全网保留；
-     真正的顶部避让由 MainActivity.java 的 WindowInsets 处理 */
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
   @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
 }
 
@@ -117,3 +113,59 @@ body.fullscreen-clock-active {
 body.fullscreen-clock-active header {
   display: none;
 }
+
+/* 笔记 Markdown 预览排版 */
+.prose-preview h1,
+.prose-preview h2,
+.prose-preview h3,
+.prose-preview h4 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 1em 0 0.4em;
+}
+.prose-preview h1 { font-size: 1.4rem; }
+.prose-preview h2 { font-size: 1.2rem; }
+.prose-preview h3 { font-size: 1.05rem; }
+.prose-preview h4 { font-size: 0.95rem; }
+.prose-preview p { margin: 0.5em 0; line-height: 1.7; }
+.prose-preview ul,
+.prose-preview ol { padding-left: 1.4em; margin: 0.5em 0; }
+.prose-preview ul { list-style: disc; }
+.prose-preview ol { list-style: decimal; }
+.prose-preview blockquote {
+  border-left: 3px solid rgb(167 139 250);
+  padding-left: 0.8em;
+  margin: 0.6em 0;
+  color: rgb(107 114 128);
+}
+.dark .prose-preview blockquote { color: rgb(156 163 175); }
+.prose-preview code {
+  background: rgb(243 244 246);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+  font-size: 0.9em;
+}
+.dark .prose-preview code { background: rgb(31 41 55); }
+.prose-preview pre {
+  background: rgb(249 250 251);
+  padding: 0.8em;
+  border-radius: 0.5em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.dark .prose-preview pre { background: rgb(17 24 39); }
+.prose-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6em 0;
+}
+.prose-preview th,
+.prose-preview td {
+  border: 1px solid rgb(229 231 235);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.dark .prose-preview th,
+.dark .prose-preview td { border-color: rgb(31 41 55); }
+.prose-preview a { color: #6d5efc; text-decoration: underline; }
+.prose-preview img { max-width: 100%; border-radius: 0.5em; }

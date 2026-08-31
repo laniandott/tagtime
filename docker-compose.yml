@@ -10,6 +10,8 @@ services:
       - ./data:/data
     environment:
       - DATABASE_URL=file:/data/tagtime.db
+      - DATA_DIR=/data
+      - NOTES_DIR=/data/notes
       - HOST=0.0.0.0
       - PORT=3000
       - TZ=Asia/Shanghai

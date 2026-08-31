@@ -131,3 +131,93 @@ export interface CalendarEvent {
   rrule: string | null
   subscription?: { name: string; color: string }
 }
+
+export interface NoteListEntry {
+  id: string
+  path: string
+  title: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+  outLinkCount: number
+  inLinkCount: number
+}
+
+export interface NoteOutLink {
+  id: string
+  targetNoteId: string | null
+  targetTitle: string
+  linkText: string
+  isResolved: boolean
+}
+
+export interface NoteInLink {
+  sourceNoteId: string
+  sourceTitle: string
+  isResolved: boolean
+}
+
+export interface NoteDetail {
+  id: string
+  path: string
+  title: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+  content: string
+  outLinks: NoteOutLink[]
+  inLinks: NoteInLink[]
+}
+
+export interface NoteAutocompleteEntry {
+  id: string
+  title: string
+  path: string
+}
+
+export interface GraphNode {
+  id: string
+  title: string
+  path: string | null
+  isCurrent?: boolean
+  isUnresolved?: boolean
+  level?: number
+}
+
+export interface GraphLink {
+  source: string
+  target: string
+  resolved: boolean
+}
+
+export interface GraphData {
+  root: string | null
+  nodes: GraphNode[]
+  links: GraphLink[]
+  truncated?: boolean
+}
+
+export type EntityLinkType = 'tag' | 'todo' | 'date' | 'memo'
+
+export interface RelatedEntity {
+  type: EntityLinkType
+  entityKey: string
+  linkText: string
+  resolved: boolean
+  name?: string
+}
+
+export interface RelatedEntities {
+  tags: RelatedEntity[]
+  todos: RelatedEntity[]
+  memos: RelatedEntity[]
+  dates: RelatedEntity[]
+}
+
+export interface LinkedNoteEntry {
+  id: string
+  title: string
+  path: string
+  revision: number
+  updatedAt: string
+}

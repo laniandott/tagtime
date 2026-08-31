@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, resolveUploadUrl } from '../api'
 import { formatDuration, toIsoSafe, useStore } from '../store'
 import type { Memo } from '../types'
@@ -16,6 +17,7 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
   const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
   const [showNewJournalModal, setShowNewJournalModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const navigate = useNavigate()
 
   const loadMemos = useCallback(async () => {
     setLoading(true)
@@ -226,6 +228,7 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
             setEditingMemo(null)
             loadMemos()
           }}
+          onOpenNote={(id) => navigate(`/notes/${id}`)}
         />
       )}
 

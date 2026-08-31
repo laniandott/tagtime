@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import { join, resolve } from 'node:path'
-import { createWriteStream, mkdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { createWriteStream, writeFileSync, unlinkSync, existsSync } from 'node:fs'
 
 function getExtension(filename: string, mimetype: string): string {
   if (filename && filename.includes('.')) {
@@ -34,19 +34,7 @@ function getExtension(filename: string, mimetype: string): string {
 
 import { randomUUID } from 'node:crypto'
 import prisma from '../db.js'
-
-// 确保上传目录存在
-const DATA_DIR = process.env.DATA_DIR
-  ? resolve(process.env.DATA_DIR)
-  : existsSync('/data')
-  ? '/data'
-  : resolve(process.cwd(), 'data')
-
-const UPLOAD_DIR = join(DATA_DIR, 'uploads')
-
-if (!existsSync(UPLOAD_DIR)) {
-  mkdirSync(UPLOAD_DIR, { recursive: true })
-}
+import { UPLOAD_DIR } from '../config.js'
 
 export { UPLOAD_DIR }
 

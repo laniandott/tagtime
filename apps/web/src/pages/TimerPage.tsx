@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useStore, formatClock, formatDuration, toIsoSafe } from '../store'
 import { api, resolveUploadUrl } from '../api'
-import type { TimeEntry, Tag, Memo } from '../types'
+import type { TimeEntry, Tag, Memo, LinkedNoteEntry } from '../types'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 
 // 辅助函数：格式化时间为 YYYY/MM/DD HH:mm:ss
@@ -513,9 +513,10 @@ function FullscreenClockOverlay({ onClose }: { onClose: () => void }) {
       document.body.classList.remove('fullscreen-clock-active')
       if (document.fullscreenElement) document.exitFullscreen().catch(() => { /* noop */ })
       if (isNative) {
-        import('@capacitor/status-bar')
-          .then(async ({ StatusBar }) => {
+          import('@capacitor/status-bar')
+          .then(async ({ StatusBar, Style }) => {
             await StatusBar.show()
+            try { await StatusBar.setStyle({ style: Style.Dark }) } catch { /* noop */ }
             window.dispatchEvent(new Event('resize'))
           })
           .catch(() => { /* noop */ })
@@ -1480,10 +1481,12 @@ export function MemoEditModal({
   memo,
   onClose,
   onSaved,
+  onOpenNote,
 }: {
   memo: Memo
   onClose: () => void
   onSaved: () => void
+  onOpenNote?: (id: string) => void
 }) {
   const [content, setContent] = useState(memo.content)
   const [memoTime, setMemoTime] = useState(toLocalInputWithSeconds(memo.createdAt))
@@ -1497,6 +1500,12 @@ export function MemoEditModal({
     }))
   )
   const [error, setError] = useState('')
+  const [linkedNotes, setLinkedNotes] = useState<LinkedNoteEntry[]>([])
+
+  // 反查：挂靠到本日记 [[memo:<id>]] 的笔记
+  useEffect(() => {
+    api.notes.linked('memo', memo.id).then(setLinkedNotes).catch(() => setLinkedNotes([]))
+  }, [memo.id])
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -1594,6 +1603,25 @@ export function MemoEditModal({
         )}
 
         {error && <div className="text-sm text-red-500">{error}</div>}
+
+        {linkedNotes.length > 0 && (
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">📝 关联笔记</label>
+            <div className="flex flex-wrap gap-1.5">
+              {linkedNotes.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => onOpenNote?.(n.id)}
+                  className="text-xs text-brand hover:underline bg-brand/5 rounded px-2 py-1 truncate max-w-[200px]"
+                  title={n.title}
+                >
+                  {n.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <FormActions onCancel={onClose} onSave={save} saveLabel="保存修改" />
     </ModalShell>

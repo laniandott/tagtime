@@ -6,6 +6,9 @@ import TodosPage from './pages/TodosPage'
 import StatsPage from './pages/StatsPage'
 import TagsPage from './pages/TagsPage'
 import CalendarPage from './pages/CalendarPage'
+import NotesPage from './pages/NotesPage'
+import NoteEditorPage from './pages/NoteEditorPage'
+import NotesGraphPage from './pages/NotesGraphPage'
 import { useStore } from './store'
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
@@ -65,6 +68,10 @@ export default function App() {
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/tags" element={<TagsPage />} />
+          <Route path="/notes" element={<NotesPage />} />
+          <Route path="/notes/graph" element={<NotesGraphPage />} />
+          <Route path="/notes/:id" element={<NoteEditorPage />} />
+          <Route path="/notes/:id/graph" element={<NotesGraphPage />} />
         </Routes>
       </Layout>
     </ErrorBoundary>

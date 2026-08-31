@@ -10,6 +10,13 @@ import type {
   Memo,
   CalendarSubscription,
   CalendarEvent,
+  NoteListEntry,
+  NoteDetail,
+  NoteAutocompleteEntry,
+  GraphData,
+  RelatedEntities,
+  EntityLinkType,
+  LinkedNoteEntry,
 } from './types'
 
 export function getServerHost(): string {
@@ -52,6 +59,16 @@ export function setServerHost(url: string) {
   }
 }
 
+export class ApiError extends Error {
+  status: number
+  data: any
+  constructor(message: string, status: number, data?: any) {
+    super(message)
+    this.status = status
+    this.data = data
+  }
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const host = getServerHost()
   const headers: Record<string, string> = {}
@@ -63,7 +80,7 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error ?? '请求失败')
+    throw new ApiError(err.error ?? '请求失败', res.status, err)
   }
   const text = await res.text()
   return (text ? JSON.parse(text) : null) as T
@@ -219,5 +236,46 @@ export const api = {
       const qs = q.toString()
       return req<CalendarEvent[]>(`/calendars/external-events${qs ? `?${qs}` : ''}`)
     },
+  },
+  notes: {
+    list: (q?: string) => {
+      const qs = q ? `?q=${encodeURIComponent(q)}` : ''
+      return req<NoteListEntry[]>(`/notes${qs}`)
+    },
+    get: (id: string) => req<NoteDetail>(`/notes/${id}`),
+    create: (data: { title: string; content?: string }) =>
+      req<{ id: string; path: string; revision: number }>('/notes', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { content: string; revision: number }) =>
+      req<{ id: string; path: string; revision: number }>(`/notes/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    rename: (id: string, data: { title: string }) =>
+      req<{ id: string; path: string; title: string }>(`/notes/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    remove: (id: string) => req<{ ok: boolean }>(`/notes/${id}`, { method: 'DELETE' }),
+    autocomplete: (q: string) => {
+      const qs = q ? `?q=${encodeURIComponent(q)}` : ''
+      return req<NoteAutocompleteEntry[]>(`/notes/autocomplete${qs}`)
+    },
+    globalGraph: (params?: { q?: string; dir?: string; recent?: number; limit?: number }) => {
+      const q = new URLSearchParams()
+      if (params?.q) q.set('q', params.q)
+      if (params?.dir) q.set('dir', params.dir)
+      if (params?.recent != null) q.set('recent', String(params.recent))
+      if (params?.limit != null) q.set('limit', String(params.limit))
+      const qs = q.toString()
+      return req<GraphData>(`/notes/graph${qs ? `?${qs}` : ''}`)
+    },
+    localGraph: (id: string, depth = 1) =>
+      req<GraphData>(`/notes/${id}/graph?depth=${depth}`),
+    entities: (id: string) => req<RelatedEntities>(`/notes/${id}/entities`),
+    linked: (type: EntityLinkType, key: string) =>
+      req<LinkedNoteEntry[]>(`/notes/linked?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`),
   },
 }

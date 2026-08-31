@@ -178,3 +178,53 @@ model CalendarEvent {
   @@unique([subscriptionId, uid])
 }
 
+/// 笔记：正文以服务器 Markdown 文件为准，本表只存索引与关系
+model Note {
+  id          String    @id @default(cuid())
+  path        String    @unique // 相对 notes/ 的路径，如 时间管理.md
+  title       String    // 显示标题
+  titleKey    String    @unique // 规范化后的标题，用于链接解析
+  contentHash String    // 文件 sha256
+  revision    Int       @default(0) // 每次保存递增，用于冲突校验
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  outLinks    NoteLink[] @relation("OutLinks")
+  inLinks     NoteLink[] @relation("InLinks")
+  entityLinks NoteEntityLink[]
+}
+
+/// 笔记双向链接：source -> target（target 不存在时视为未解析）
+model NoteLink {
+  id           String   @id @default(cuid())
+  sourceNoteId String
+  targetNoteId String?  // 目标不存在时为 null → 未解析
+  targetTitle  String   // 保留原始标题，即使目标未建
+  targetKey    String   // 规范化后的目标标题
+  linkText     String   // [[名|别名]] 中的别名
+  isResolved   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  source Note  @relation("OutLinks", fields: [sourceNoteId], references: [id], onDelete: Cascade)
+  target Note? @relation("InLinks", fields: [targetNoteId], references: [id], onDelete: SetNull)
+
+  @@index([sourceNoteId])
+  @@index([targetNoteId])
+  @@unique([sourceNoteId, targetKey])
+}
+
+/// 笔记 ↔ TagTime 实体关联（tag/todo/date/memo 特殊链接）
+model NoteEntityLink {
+  id        String   @id @default(cuid())
+  noteId    String
+  type      String   // tag | todo | date | memo
+  entityKey String   // tag:标签名, todo:标题, date:YYYY-MM-DD, memo:日记id
+  linkText  String   // [[type:key|别名]] 中的别名
+  createdAt DateTime @default(now())
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, type])
+  @@unique([noteId, type, entityKey])
+}
+

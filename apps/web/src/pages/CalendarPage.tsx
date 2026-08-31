@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { formatDuration, useStore, toIsoSafe } from '../store'
-import type { TimeEntry, Memo, Todo } from '../types'
+import type { TimeEntry, Memo, Todo, LinkedNoteEntry } from '../types'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
 import { CalendarSyncModal } from '../components/CalendarSyncModal'
 import { SubscriptionManager } from '../components/SubscriptionManager'
@@ -203,6 +204,7 @@ const HOUR_HEIGHT_WEEK = 48
 
 export default function CalendarPage() {
   const { categories } = useStore()
+  const [searchParams] = useSearchParams()
   const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [entries, setEntries] = useState<TimeEntry[]>([])
@@ -217,12 +219,32 @@ export default function CalendarPage() {
   const [dayDetailDate, setDayDetailDate] = useState<Date | null>(null) // 月视图点击日期弹窗
   const [now, setNow] = useState(new Date())
   const [calendarLoading, setCalendarLoading] = useState(false)
+  const [dayLinkedNotes, setDayLinkedNotes] = useState<LinkedNoteEntry[]>([])
+  const goNote = useNavigate()
+
+  // 日视图回显关联笔记 [[date:YYYY-MM-DD]]
+  useEffect(() => {
+    if (view !== 'day') { setDayLinkedNotes([]); return }
+    const iso = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
+    api.notes.linked('date', iso).then(setDayLinkedNotes).catch(() => setDayLinkedNotes([]))
+  }, [view, currentDate])
 
   // 每分钟更新当前时间（用于"现在"指示线）
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60000)
     return () => clearInterval(t)
   }, [])
+
+  // 支持从笔记 [[date:YYYY-MM-DD]] 跳转：定位到指定日期（日视图）
+  useEffect(() => {
+    const d = searchParams.get('date')
+    if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      const parts = d.split('-').map(Number)
+      setCurrentDate(new Date(parts[0], parts[1] - 1, parts[2]))
+      setView('day')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   // 计算日期范围
   const range = useMemo(() => {
@@ -497,6 +519,8 @@ export default function CalendarPage() {
           now={now}
           onEntryClick={setSelectedEntry}
           onCreate={(start, end) => setQuickCreateForDate(start, start, end)}
+          linkedNotes={dayLinkedNotes}
+          onOpenNote={(id) => goNote(`/notes/${id}`)}
         />
       ) : view === 'week' ? (
         <WeekView
@@ -573,7 +597,7 @@ export default function CalendarPage() {
 
 // ===== 日视图 =====
 
-function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, onCreate }: {
+function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, onCreate, linkedNotes = [], onOpenNote }: {
   date: Date
   entries: TimeEntry[]
   dayMemos: Memo[]
@@ -581,6 +605,8 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
   now: Date
   onEntryClick: (e: TimeEntry) => void
   onCreate: (start: Date, end: Date) => void
+  linkedNotes?: LinkedNoteEntry[]
+  onOpenNote?: (id: string) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const dayStart = startOfDay(date).getTime()
@@ -619,6 +645,22 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
       className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 overflow-y-auto"
       style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
+      {/* 笔记回显：挂靠到本日期的 [[date:...]] 笔记 */}
+      {linkedNotes.length > 0 && (
+        <div className="flex items-center flex-wrap gap-1 px-2 py-1 border-b border-gray-200 dark:border-gray-800">
+          <span className="text-[10px] font-semibold text-gray-400 mr-1">📝 关联笔记</span>
+          {linkedNotes.map((n) => (
+            <button
+              key={n.id}
+              onClick={() => onOpenNote?.(n.id)}
+              className="text-[11px] text-brand hover:underline bg-brand/5 rounded px-1.5 py-0.5 truncate max-w-[180px]"
+              title={n.title}
+            >
+              {n.title}
+            </button>
+          ))}
+        </div>
+      )}
       {/* 外部 ICS 事件和次数打卡栏，避免占用时间轴 */}
       {(topExternal.length > 0 || countEntries.length > 0) && (
         <div className="flex border-b border-gray-200 dark:border-gray-800 px-2 py-1 gap-1 flex-wrap">
