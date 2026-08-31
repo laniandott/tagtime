@@ -7,6 +7,11 @@
     "cleartext": true
   },
   "plugins": {
+    "StatusBar": {
+      "overlaysWebView": false,
+      "style": "DARK",
+      "backgroundColor": "#f9fafb"
+    },
     "LocalNotifications": {
       "iconColor": "#6D5EFC"
     }
