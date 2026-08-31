@@ -89,12 +89,13 @@ node scripts/backup-restore-cli.mjs restore /path/to/backup-dir --force
 ```bash
 # 数据一致性（备份→破坏→恢复→重启断言）
 npm run backup:drill -w apps/server
-# CLI 行为（运行保护/路径重叠/校验失败/恶意 manifest 拒绝/跨卷恢复/事务回滚等 10 场景，全部临时目录隔离）
+# CLI 行为（运行保护/路径重叠/校验失败/恶意 manifest 拒绝/跨卷恢复/Phase A·B 回滚/Phase C 清理语义等 12 场景，全部临时目录隔离）
 npm run backup:cli:drill -w apps/server
 ```
 
 ## 7. 版本与状态
 
 - 本 CLI 属阶段六「离线备份/恢复」实现，首版提交 `5878218`。
-- `c1d2c09` 起移除 `--ignore-running` 旁路并加固路径校验、sidecar 清理；后续提交把恢复改为事务式替换并补齐演练 S7-S10。
-- 状态：CLI 演练（10 场景）、服务端构建与既有测试通过；六-D 的「干净安装 / 升级安装 / 正式发布产物检查」及六-C 真机回归仍为独立待办，阶段六尚未正式验收与发布。
+- `c1d2c09` 起移除 `--ignore-running` 旁路并加固路径校验、sidecar 清理。
+- `a8e6dbb` 把恢复改为事务式替换并补齐演练 S7-S10；其后补 Phase A/B 全阶段回滚与 Phase C「已提交待清理」语义（S11-S12），fault-injection 仅在 `TAGTIME_TEST_RUNNER=1` 时生效，生产流程无测试旁路。
+- 状态：CLI 演练（12 场景）、服务端构建与既有测试通过；六-D 的「干净安装 / 升级安装 / 正式发布产物检查」及六-C 真机回归仍为独立待办，阶段六尚未正式验收与发布。

@@ -1,7 +1,8 @@
 // 六-D：离线备份/恢复 CLI 演练（可重复，全部在临时目录隔离运行，不接触用户数据）
 // 覆盖场景：备份成功、正常恢复(含覆盖前自动备份)、校验和损坏拒绝、缺少主库拒绝、
-//           未确认覆盖拒绝、路径重叠拒绝、服务运行中拒绝、恶意 manifest 路径穿越拒绝、
-//           跨卷(EXDEV)恢复安全失败、陈旧 SQLite sidecar 集合清理。
+//           目标在 notes 内拒绝、服务运行中拒绝、恶意/非法 manifest 拒绝(路径穿越/schema/重复/负size)、
+//           第二卷默认同卷成功恢复、陈旧 SQLite sidecar 集合清理、
+//           Phase B 落位失败回滚、Phase A park 中途失败回滚、Phase C 清理失败"已提交待清理"语义。
 // 用法（仓库根）：npm run backup:cli:drill -w apps/server
 import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
@@ -235,7 +236,7 @@ try {
     writeFileSync(join(E.notes, 'a.md'), '# current-local', 'utf8')
     writeFileSync(join(E.uploads, 'pic.bin'), Buffer.from('local-up'))
     writeFileSync(E.db, Buffer.from('local-db'))
-    const envF = { ...E.envObj, BACKUP_RESTORE_TEST_FAILPOINT: 'after_notes' }
+    const envF = { ...E.envObj, TAGTIME_TEST_RUNNER: '1', BACKUP_RESTORE_TEST_FAILPOINT: 'after_notes' }
     const r = await runCLI(['restore', dest, '--force'], envF)
     const out = r.stdout + r.stderr
     report(r.code !== 0, 'S10 中途替换失败命令失败（故障注入）')
@@ -246,7 +247,49 @@ try {
     rmSync(t, { recursive: true, force: true })
   }
 
-  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 10 场景）' : '[drill] 结果：存在失败')
+  // ===== S11：Phase A park 中途失败 → 回滚，notes/uploads/主库/sidecar 全部原样，无 park 残留 =====
+  {
+    const t = mkdtempSync(join(tmpdir(), 'tt-cli-s11-')); const E = makeEnv(t, basePort + 11)
+    seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    const dest = join(t, 'backups', 'out')
+    await runCLI(['backup', '--dest', dest], E.envObj)
+    // 制造"覆盖前的当前状态"（含 sidecar），用于断言 Phase A 失败回滚全量还原
+    writeFileSync(join(E.notes, 'a.md'), '# local-current', 'utf8')
+    writeFileSync(join(E.uploads, 'pic.bin'), Buffer.from('up-current'))
+    writeFileSync(E.db, Buffer.from('db-current'))
+    writeFileSync(E.db + '-wal', Buffer.from('wal-current'))
+    const envF = { ...E.envObj, TAGTIME_TEST_RUNNER: '1', BACKUP_RESTORE_TEST_FAILPOINT: 'after_park_1' }
+    const r = await runCLI(['restore', dest, '--force'], envF)
+    report(r.code !== 0, 'S11 Phase A park 中途失败命令失败（故障注入）')
+    report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# local-current', 'S11 回滚后 notes 还原为本地当前内容')
+    report(readFileSync(join(E.uploads, 'pic.bin')).equals(Buffer.from('up-current')), 'S11 回滚后 uploads 还原为本地当前内容')
+    report(readFileSync(E.db).equals(Buffer.from('db-current')), 'S11 回滚后主库还原为本地当前内容')
+    report(readFileSync(E.db + '-wal').equals(Buffer.from('wal-current')), 'S11 回滚后 -wal 还原为本地当前内容')
+    report(!existsSync(join(E.notes) + '.tagt-restore-park') && !existsSync(join(E.uploads) + '.tagt-restore-park') && !existsSync(E.db + '.tagt-restore-park'), 'S11 无 park 残留')
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  // ===== S12：Phase C 清理失败 → 恢复已提交并报告"待清理"，不报"回滚失败"，保留可恢复 park =====
+  {
+    const t = mkdtempSync(join(tmpdir(), 'tt-cli-s12-')); const E = makeEnv(t, basePort + 12)
+    seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    const dest = join(t, 'backups', 'out')
+    await runCLI(['backup', '--dest', dest], E.envObj)
+    // 改动目标以证明"恢复已提交"（数据被替换为备份内容）
+    writeFileSync(join(E.notes, 'a.md'), '# local', 'utf8')
+    const envF = { ...E.envObj, TAGTIME_TEST_RUNNER: '1', BACKUP_RESTORE_TEST_FAILPOINT: 'cleanup_fail' }
+    const r = await runCLI(['restore', dest, '--force'], envF)
+    const out = r.stdout + r.stderr
+    report(r.code === 0, 'S12 Phase C 清理失败仍标记恢复成功（已提交）', (r.stderr.trim() || r.stdout.split('\n').pop()) || null)
+    report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# hello backup', 'S12 数据已提交（notes=备份原文）')
+    report(readFileSync(E.db).equals(Buffer.from('SQLite-format-3\0drill-seed')), 'S12 主库已提交为备份内容')
+    report(/已提交|待清理|清理/.test(out), 'S12 输出提示"已提交/待清理"', out.trim().slice(0, 60) || null)
+    report(!/恢复失败/.test(out), 'S12 不输出"恢复失败"')
+    report(existsSync(join(E.notes) + '.tagt-restore-park') || existsSync(E.db + '-wal' + '.tagt-restore-park'), 'S12 保留可恢复 park')
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 12 场景）' : '[drill] 结果：存在失败')
 } catch (e) {
   ok = false
   console.error('[drill] 失败:', e.message || e)

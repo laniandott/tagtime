@@ -265,10 +265,16 @@ function targetHasDataNow() {
 }
 function baseSuffix(name) { return name.endsWith('-wal') ? '-wal' : name.endsWith('-shm') ? '-shm' : '' }
 function assignCopy(src, dst) { mkdirSync(dirname(dst), { recursive: true }); cpSync(src, dst) }
+// 测试专用故障注入：仅在显式声明测试 runner 时生效（TAGTIME_TEST_RUNNER=1），生产环境不读取。
+// 支持点位于替换事务的不同阶段：after_park_<N>（Phase A 第 N 个目标移入 park 后）、
+// after_notes/after_uploads（Phase B 落位后）、cleanup_fail（Phase C 清理时）。
+const TEST_RUNNER = process.env.TAGTIME_TEST_RUNNER === '1'
+const TEST_FAILPOINT = TEST_RUNNER ? (process.env.BACKUP_RESTORE_TEST_FAILPOINT || null) : null
+function failNow(point) { if (TEST_FAILPOINT === point) throw new Error('test-failpoint:' + point) }
 // 恢复采用事务式替换：staging 一律建在各目标同卷（rename 不跨卷）。
-// 提交时先把现有目标各自 rename 到同卷 park 并保留，再逐一落位新数据；
-// 任一步失败，直接移除已放置的新数据并用 parks 还原全部目标（原目标为空时也会清掉部分新数据）。
-// 仅测试用故障注入（不写入帮助/文档）：BACKUP_RESTORE_TEST_FAILPOINT=after_<notes|uploads>
+// Phase A 把现有目标（notes/uploads/主库/-wal/-shm）各自移入同卷 park 保留；
+// Phase B 逐一落位新数据；两阶段任一步失败都走 rollbackRestore() 整体还原。
+// Phase C 为提交后清理：仅在全部落位后删除 parks，失败只提示“待清理”，不伪装成可回滚失败。
 async function applyRestore(srcDir, manifest) {
   const dbBase = basename(DB_FILE)
   let notesRoot, upRoot, dbDir
@@ -296,29 +302,50 @@ async function applyRestore(srcDir, manifest) {
     for (const suf of DB_SUFFIXES) {
       if (suf !== '' && !present.has(dbBase + suf)) units.push({ from: null, to: DB_FILE + suf })
     }
-    for (const u of units) { u.hadOriginal = existsSync(u.to); u.park = u.to + '.tagt-restore-park' }
+    for (const u of units) { u.hadOriginal = existsSync(u.to); u.park = u.to + '.tagt-restore-park'; u.placed = false }
 
-    // 3) Phase A：把现有目标移入同卷 park，保留原数据
-    for (const u of units) if (u.hadOriginal) renameSync(u.to, u.park)
-
-    // 4) Phase B：落位新数据；任一步失败 → 回滚
     try {
+      // 3) Phase A：把现有目标移入同卷 park，保留原数据
+      let parked = 0
       for (const u of units) {
-        if (u.from !== null) {
-          renameSync(u.from, u.to)
-          const label = u.to === NOTES_DIR ? 'notes' : u.to === UPLOAD_DIR ? 'uploads' : null
-          if (label && process.env.BACKUP_RESTORE_TEST_FAILPOINT === 'after_' + label) throw new Error(`failpoint after_${label}`)
-        }
+        if (!u.hadOriginal) continue
+        renameSync(u.to, u.park)
+        parked++
+        failNow('after_park_' + parked)
+      }
+      // 4) Phase B：落位新数据
+      for (const u of units) {
+        if (u.from === null) continue
+        renameSync(u.from, u.to)
+        u.placed = true
+        const label = u.to === NOTES_DIR ? 'notes' : u.to === UPLOAD_DIR ? 'uploads' : null
+        if (label) failNow('after_' + label)
       }
     } catch (e) {
-      // 5) 回滚：清除本事务已放置的新目标，再从 parks 还原所有原数据
-      for (const u of units) rmSync(u.to, { recursive: true, force: true })
-      for (const u of units) if (u.hadOriginal) renameSync(u.park, u.to)
+      // 5) 回滚（覆盖 Phase A/Phase B 任意失败点，幂等）：
+      //    - 原数据已在 park → 清除本事务放入的新目标后用 park 还原；
+      //    - 原目标为空但已 move-in → 移除新数据以恢复"空"；
+      //    - 尚未 park/move-in 的单元保持原状。
+      for (const u of units) {
+        if (u.placed && !existsSync(u.park)) rmSync(u.to, { recursive: true, force: true })
+      }
+      for (const u of units) {
+        if (existsSync(u.park)) {
+          rmSync(u.to, { recursive: true, force: true })
+          renameSync(u.park, u.to)
+        }
+      }
       throw e
     }
 
-    // 6) Phase C：全部成功 → 统一删除 parks
-    for (const u of units) if (u.hadOriginal) rmSync(u.park, { recursive: true, force: true })
+    // 6) Phase C：提交完成 → 幂等清理 parks；失败只保留可恢复 park 并提示，不报“恢复失败”
+    const pending = []
+    for (const u of units) {
+      if (!u.hadOriginal) continue
+      try { failNow('cleanup_fail'); rmSync(u.park, { recursive: true, force: true }) }
+      catch { pending.push(u.park) }
+    }
+    if (pending.length) info(`恢复已提交，但以下暂存残留未能清理（可手动删除，或下次恢复时重试）：${pending.join('、')}`)
   } finally {
     if (notesRoot) rmSync(notesRoot, { recursive: true, force: true })
     if (upRoot) rmSync(upRoot, { recursive: true, force: true })
@@ -342,7 +369,7 @@ async function doRestore(srcRaw, { force }) {
   }
 
   try {
-    // 事务式 applyRestore 已在内部用 parks 回滚；这里不再二次重放，避免“回滚失败”误报
+    // 事务式 applyRestore 已在 Phase A/B 内部用 parks 回滚；Phase C 只报告“已提交待清理”
     await applyRestore(srcDir, manifest)
   } catch (e) {
     const hint = preDir ? `；已生成恢复前备份于 ${preDir}，可用于手动恢复` : ''
