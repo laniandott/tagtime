@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "recovery:drill": "node scripts/recovery-drill.mjs",
+    "backup:drill": "node scripts/backup-restore-drill.mjs",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:generate": "prisma generate"
