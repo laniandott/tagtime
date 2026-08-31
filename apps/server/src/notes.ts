@@ -127,6 +127,23 @@ export function withNoteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return enqueue(key, fn)
 }
 
+// ---- watcher / API 重命名协调 ----
+// API 重命名会“写新路径文件、删旧路径文件”，这些文件系统操作会产生 Chokidar 事件。
+// 若不抑制：watcher 可能在数据库把 Note.path 更新到新路径之前，先为新路径建一条新 Note
+// （随后 API 更新触发 path 唯一约束冲突），也可能在 API 更新前删掉旧路径对应索引。
+// 这里在 API 操作期间把相关路径标记为“暂停”，watcher 收到事件后直接跳过对应处理。
+const suspendedWatcherPaths = new Set<string>()
+export function suspendWatcherPaths(paths: Iterable<string>, ms: number): void {
+  const arr = Array.from(paths)
+  for (const p of arr) suspendedWatcherPaths.add(p)
+  setTimeout(() => {
+    for (const p of arr) suspendedWatcherPaths.delete(p)
+  }, ms)
+}
+export function isWatcherPathSuspended(relPath: string): boolean {
+  return suspendedWatcherPaths.has(relPath)
+}
+
 // 同步单个笔记文件：读文件->算hash->更新Note->重建NoteLink->按需广播
 // reason: 'api' | 'watcher' | 'startup' | 'rebuild'
 // 注：本函数不做加锁，调用方须通过 syncNoteFile（自加 per-path 锁）或已在 withNoteLock 内

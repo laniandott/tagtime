@@ -12,6 +12,7 @@ import {
   noteAbsPath,
   notesEmitter,
   rewriteNoteTitleInOthers,
+  suspendWatcherPaths,
 } from '../notes.js'
 import { normalizeTitleKey } from '../links.js'
 import { getLocalGraph, getGlobalGraph } from '../notes-graph.js'
@@ -22,6 +23,9 @@ export type NoteListQuery = {
 }
 
 export default async function noteRoutes(app: FastifyInstance) {
+  // API 重命名期间暂停 watcher 处理新旧路径：窗口需覆盖 watcher 的 500ms 防抖 + awaitWriteFinish(400ms) + 余量，
+  // 保证重命名产生的 add/unlink 事件在数据库完成 path 更新前不会触发 watcher 建重复索引或误删旧索引。
+  const RENAME_SUSPEND_MS = 3000
   // WebSocket 实时广播：Note created/updated/deleted/renamed
   app.get('/ws', { websocket: true }, (socket, _req) => {
     const send = (payload: unknown) => {
@@ -253,6 +257,7 @@ export default async function noteRoutes(app: FastifyInstance) {
           return reply.code(409).send({ error: '目标文件名已存在' })
         }
         if (newPath !== cur.path) {
+          suspendWatcherPaths([cur.path, newPath], RENAME_SUSPEND_MS)
           await atomicWriteFile(noteAbsPath(newPath), await readNoteFile(cur.path))
           await unlink(noteAbsPath(cur.path)).catch(() => {})
         }

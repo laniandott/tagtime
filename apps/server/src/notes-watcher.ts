@@ -1,7 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { sep } from 'node:path'
 import { NOTES_DIR } from './config.js'
-import { syncNoteFile, removeNoteByPath } from './notes.js'
+import { syncNoteFile, removeNoteByPath, isWatcherPathSuspended } from './notes.js'
 
 let watcher: FSWatcher | null = null
 
@@ -30,13 +30,19 @@ export function trackNotesDirectory() {
     awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
   })
 
-  const debouncedSync = makeFileDebounce((rel: string) => void syncNoteFile(rel, 'watcher'), 500)
+  const debouncedSync = makeFileDebounce((rel: string) => {
+    // 到执行时刻仍处于暂停期（如 API 重命名）则丢弃，避免给新路径建重复索引
+    if (isWatcherPathSuspended(rel)) return
+    void syncNoteFile(rel, 'watcher')
+  }, 500)
 
   watcher.on('all', (event, absPath) => {
     if (!absPath.endsWith('.md')) return
     const rel = relOf(absPath)
     // 第一版仅支持 notes/ 根目录单层，子目录文件与启动扫描保持一致，一律忽略
     if (rel.includes('/') || rel.includes('\\')) return
+    // API 重命名期间跳过新旧路径事件：避免新路径被提前建索引、旧路径索引被提前误删
+    if (isWatcherPathSuspended(rel)) return
     if (event === 'unlink' || event === 'unlinkDir') {
       void removeNoteByPath(rel)
     } else if (event === 'add' || event === 'change') {
