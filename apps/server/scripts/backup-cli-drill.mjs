@@ -143,35 +143,41 @@ try {
     rmSync(t, { recursive: true, force: true })
   }
 
-  // ===== S7：恶意 manifest 路径穿越 → 恢复拒绝，目标数据不变（notes/uploads/database 三类） =====
+  // ===== S7：恶意/非法 manifest → 恢复拒绝，目标数据不变（notes/uploads/db/schema 多类） =====
   {
     const t = mkdtempSync(join(tmpdir(), 'tt-cli-s7-')); const E = makeEnv(t, basePort + 7)
     seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    const seedUp = readFileSync(join(E.uploads, 'pic.bin'))
+    const seedDb = readFileSync(E.db)
     const baseManifest = () => ({
       tool: 'tagtime-backup', kind: 'backup', version: 1, createdAt: new Date().toISOString(),
-      database: { file: 'tagtime.db', suffixes: [''], files: [{ file: 'tagtime.db', size: 1, sha256: '0'.repeat(64) }] },
-      notes: { baseDir: 'x', count: 1, files: [{ rel: 'a.md', size: 1, sha256: '0'.repeat(64) }] },
-      uploads: { baseDir: 'x', count: 0, files: [] },
+      database: { file: 'tagtime.db', suffixes: [''], files: [{ file: 'tagtime.db', size: seedDb.length, sha256: '0'.repeat(64) }] },
+      notes: { baseDir: 'x', count: 1, files: [{ rel: 'a.md', size: '# hello backup'.length, sha256: '0'.repeat(64) }] },
+      uploads: { baseDir: 'x', count: 1, files: [{ rel: 'pic.bin', size: seedUp.length, sha256: '0'.repeat(64) }] },
       dataDir: 'x',
     })
     const tamper = async (label, mutate) => {
       const src = join(t, 'bak-' + label)
       mkdirSync(src, { recursive: true })
       mkdirSync(join(src, 'notes'), { recursive: true }); mkdirSync(join(src, 'uploads'), { recursive: true })
-      writeFileSync(join(src, 'tagtime.db'), 'x', 'utf8'); writeFileSync(join(src, 'notes', 'a.md'), '# hi', 'utf8')
+      writeFileSync(join(src, 'tagtime.db'), seedDb, 'utf8'); writeFileSync(join(src, 'notes', 'a.md'), '# hello backup', 'utf8'); writeFileSync(join(src, 'uploads', 'pic.bin'), seedUp)
       const m = baseManifest(); mutate(m)
       writeFileSync(join(src, 'manifest.json'), JSON.stringify(m), 'utf8')
       const r = await runCLI(['restore', src, '--force'], E.envObj)
-      report(r.code !== 0, `S7 恶意 manifest ${label} 恢复拒绝`, (r.stderr + r.stdout).trim().slice(0, 60))
+      report(r.code !== 0, `S7 非法 manifest ${label} 恢复拒绝`, (r.stderr + r.stdout).trim().slice(0, 70))
       report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# hello backup', `S7 ${label} 未改动 notes 数据`)
+      report(readFileSync(join(E.uploads, 'pic.bin')).equals(seedUp), `S7 ${label} 未改动 uploads 数据`)
+      report(readFileSync(E.db).equals(seedDb), `S7 ${label} 未改动主库数据`)
     }
     await tamper('notes-..', (m) => { m.notes.files[0].rel = '../evil.md' })
     await tamper('uploads-abs', (m) => { m.uploads.files = [{ rel: 'C:/evil.bin', size: 1, sha256: '0'.repeat(64) }] })
     await tamper('db-escape', (m) => { m.database.files[0].file = 'backup-sneaky.db' })
+    await tamper('db-dup', (m) => { m.database.files.push({ file: 'tagtime.db', size: seedDb.length, sha256: '0'.repeat(64) }) })
+    await tamper('size-neg', (m) => { m.notes.files[0].size = -5 })
     rmSync(t, { recursive: true, force: true })
   }
 
-  // ===== S8：跨卷(EXDEV)恢复安全失败，原数据保留（无第二卷则跳过） =====
+  // ===== S8：第二卷默认同卷 staging → 真实跨卷恢复成功（单卷环境跳过） =====
   {
     // 探测与临时目录不同卷的可用盘符（Windows）；找不到则跳过并说明。
     const tmpVol = parse(tmpdir()).root
@@ -183,22 +189,21 @@ try {
       }
     }
     if (!altVol) {
-      report(true, 'S8 无第二卷，跳过 EXDEV 回归（单卷环境）')
+      report(true, 'S8 无第二卷，跳过默认同卷跨卷恢复（单卷环境）')
     } else {
       const t = join(altVol, '.tagtime-exdev-' + Date.now())
       const E = makeEnv(t, basePort + 8)
       seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
       const dest = join(t, 'backups', 'out')
       await runCLI(['backup', '--dest', dest], E.envObj)
-      // 覆盖目标数据，制造"覆盖前已有内容"以触发替换阶段
+      // 改动目标以触发覆盖替换，同时制造"第二卷作为恢复目标"
       writeFileSync(join(E.notes, 'a.md'), '# modified', 'utf8')
-      const before = readFileSync(join(E.notes, 'a.md'), 'utf8')
-      // 强制 staging 放到系统临时目录(不同卷) → replaceStage→target 触发 EXDEV
-      const env2 = { ...E.envObj, BACKUP_RESTORE_STAGING: 'os-tmp' }
-      const r = await runCLI(['restore', dest, '--force'], env2)
-      // 命令应失败（EXDEV），且原数据未丢失（可回滚恢复 park 或至少未被清空破坏）
-      report(r.code !== 0, 'S8 跨卷恢复读取EXDEV安全失败', (r.stderr + r.stdout).trim().slice(0, 80))
-      report(existsSync(join(E.notes, 'a.md')) && readFileSync(join(E.notes, 'a.md'), 'utf8') === before, 'S8 EXDEV 后 notes 数据保留')
+      writeFileSync(join(E.uploads, 'pic.bin'), Buffer.from([9, 9]))
+      const r = await runCLI(['restore', dest, '--force'], E.envObj)
+      report(r.code === 0, 'S8 第二卷默认同卷恢复成功', (r.stderr.trim() || r.stdout.split('\n').pop()) || null)
+      report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# hello backup', 'S8 notes 恢复到备份原文')
+      report(readFileSync(join(E.uploads, 'pic.bin')).equals(Buffer.from([1, 2, 3, 4, 5])), 'S8 uploads 恢复到备份内容')
+      report(readFileSync(E.db).equals(Buffer.from('SQLite-format-3\0drill-seed')), 'S8 主库恢复到备份内容')
       rmSync(t, { recursive: true, force: true })
     }
   }
@@ -220,7 +225,28 @@ try {
     rmSync(t, { recursive: true, force: true })
   }
 
-  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 9 场景）' : '[drill] 结果：存在失败')
+  // ===== S10：中途替换失败 → 事务回滚，notes/uploads/主库全部还原，且不输出"回滚失败" =====
+  {
+    const t = mkdtempSync(join(tmpdir(), 'tt-cli-s10-')); const E = makeEnv(t, basePort + 10)
+    seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    const dest = join(t, 'backups', 'out')
+    await runCLI(['backup', '--dest', dest], E.envObj)
+    // 制造"覆盖前的当前状态"，用于断言回滚还原到当前状态而非备份内容
+    writeFileSync(join(E.notes, 'a.md'), '# current-local', 'utf8')
+    writeFileSync(join(E.uploads, 'pic.bin'), Buffer.from('local-up'))
+    writeFileSync(E.db, Buffer.from('local-db'))
+    const envF = { ...E.envObj, BACKUP_RESTORE_TEST_FAILPOINT: 'after_notes' }
+    const r = await runCLI(['restore', dest, '--force'], envF)
+    const out = r.stdout + r.stderr
+    report(r.code !== 0, 'S10 中途替换失败命令失败（故障注入）')
+    report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# current-local', 'S10 回滚后 notes 还原为本地当前内容')
+    report(readFileSync(join(E.uploads, 'pic.bin')).equals(Buffer.from('local-up')), 'S10 回滚后 uploads 还原为本地当前内容')
+    report(readFileSync(E.db).equals(Buffer.from('local-db')), 'S10 回滚后主库还原为本地当前内容')
+    report(!/回滚失败/.test(out), 'S10 命令未输出"回滚失败"', out.trim().slice(0, 60) || null)
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 10 场景）' : '[drill] 结果：存在失败')
 } catch (e) {
   ok = false
   console.error('[drill] 失败:', e.message || e)

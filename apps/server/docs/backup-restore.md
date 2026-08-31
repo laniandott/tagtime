@@ -51,8 +51,8 @@ node scripts/backup-restore-cli.mjs --help
 ### 3.3 路径与运行保护
 
 - 若检测到服务端正在运行（`PORT` 被监听），命令会拒绝并提示先停止服务（无旁路参数，确保离线一致性）。
-- 备份目标若落在 `notes/` / `uploads/` 目录内部，会因自包含风险被拒绝；目标已存在也会被拒绝（需更换 `--dest` 或先移除旧备份）。
-- 目标目录请显式指定在数据目录之外，避免与数据自包含。
+- 备份目标若落在 `notes/` / `uploads/` 目录内部，或直接覆盖数据库文件，会因自包含/破坏数据库风险被拒绝。
+- 默认会写入 `<DATA_DIR>/backups/backup-<时间戳>/`；真正禁止的是目标放在 `notes/` / `uploads/` 内部或覆盖数据库文件，而非要求必须在数据目录之外。
 
 ## 4. 恢复
 
@@ -70,7 +70,7 @@ node scripts/backup-restore-cli.mjs restore /path/to/backup-dir
 - 恢复前会**校验 `manifest.json` 与所有文件的 SHA-256**；任一不一致即拒绝，不触碰现有数据；
 - **默认拒绝覆盖**：若目标目录已有数据，命令会退出并提示；确认要覆盖时加 `--force`（或 `--overwrite`）；
 - 使用 `--force` 覆盖前，会自动生成一份独立的「恢复前备份」到 `<DATA_DIR>/backups/pre-restore-<时间戳>/`，供出错时回滚；
-- 恢复采用「临时目录 + 原子替换」，若遇失败会尽力回滚到该恢复前备份；日志会打印恢复前备份路径供手动处置。
+- 恢复采用**事务式替换**：先将 notes/uploads/主库及 `-wal/-shm` 各自移到同卷暂存并保留，再逐一落位新数据；任一步失败立即用暂存还原全部目标（原目标为空也会清掉部分新数据），日志会打印「恢复前备份」路径供手动处置。
 
 ```bash
 node scripts/backup-restore-cli.mjs restore /path/to/backup-dir --force
@@ -89,11 +89,12 @@ node scripts/backup-restore-cli.mjs restore /path/to/backup-dir --force
 ```bash
 # 数据一致性（备份→破坏→恢复→重启断言）
 npm run backup:drill -w apps/server
-# CLI 行为（路径重叠/校验失败/停止检查/覆盖保护等 6 场景，全部临时目录隔离）
+# CLI 行为（运行保护/路径重叠/校验失败/恶意 manifest 拒绝/跨卷恢复/事务回滚等 10 场景，全部临时目录隔离）
 npm run backup:cli:drill -w apps/server
 ```
 
 ## 7. 版本与状态
 
-- 本 CLI 属阶段六「离线备份/恢复」实现，提交 `5878218`。
-- 状态：CLI 行为演练通过、服务端构建与既有测试通过；六-D 的「干净安装 / 升级安装 / 正式发布产物检查」及六-C 真机回归仍为独立待办，阶段六尚未正式验收与发布。
+- 本 CLI 属阶段六「离线备份/恢复」实现，首版提交 `5878218`。
+- `c1d2c09` 起移除 `--ignore-running` 旁路并加固路径校验、sidecar 清理；后续提交把恢复改为事务式替换并补齐演练 S7-S10。
+- 状态：CLI 演练（10 场景）、服务端构建与既有测试通过；六-D 的「干净安装 / 升级安装 / 正式发布产物检查」及六-C 真机回归仍为独立待办，阶段六尚未正式验收与发布。
