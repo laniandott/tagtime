@@ -1,11 +1,12 @@
 // 六-D：离线备份/恢复 CLI 演练（可重复，全部在临时目录隔离运行，不接触用户数据）
 // 覆盖场景：备份成功、正常恢复(含覆盖前自动备份)、校验和损坏拒绝、缺少主库拒绝、
-//           未确认覆盖拒绝、路径重叠拒绝、服务运行中拒绝(--ignore-running 放行)。
+//           未确认覆盖拒绝、路径重叠拒绝、服务运行中拒绝、恶意 manifest 路径穿越拒绝、
+//           跨卷(EXDEV)恢复安全失败、陈旧 SQLite sidecar 集合清理。
 // 用法（仓库根）：npm run backup:cli:drill -w apps/server
 import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, parse } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 
@@ -130,7 +131,7 @@ try {
     rmSync(t, { recursive: true, force: true })
   }
 
-  // ===== S6：服务运行中 → 拒绝；--ignore-running → 放行 =====
+  // ===== S6：服务运行中 → 拒绝（无旁路参数） =====
   {
     const t = mkdtempSync(join(tmpdir(), 'tt-cli-s6-')); const E = makeEnv(t, basePort + 6)
     seedData(join(E.notes, 'a.md'), join(E.uploads, 'p.bin'))
@@ -138,13 +139,88 @@ try {
     await new Promise((res) => srv.listen(Number(E.envObj.PORT), '127.0.0.1', res))
     const r = await runCLI(['backup', '--dest', join(t, 'out')], E.envObj)
     report(r.code !== 0 && /正在运行|请先停止/.test(r.stderr + r.stdout), 'S6 服务运行中备份被拒绝', (r.stderr + r.stdout).trim().slice(0, 60))
-    const r2 = await runCLI(['backup', '--dest', join(t, 'ignored'), '--ignore-running'], E.envObj)
-    report(r2.code === 0, 'S6 --ignore-running 放行备份')
     srv.close()
     rmSync(t, { recursive: true, force: true })
   }
 
-  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 6 场景）' : '[drill] 结果：存在失败')
+  // ===== S7：恶意 manifest 路径穿越 → 恢复拒绝，目标数据不变（notes/uploads/database 三类） =====
+  {
+    const t = mkdtempSync(join(tmpdir(), 'tt-cli-s7-')); const E = makeEnv(t, basePort + 7)
+    seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    const baseManifest = () => ({
+      tool: 'tagtime-backup', kind: 'backup', version: 1, createdAt: new Date().toISOString(),
+      database: { file: 'tagtime.db', suffixes: [''], files: [{ file: 'tagtime.db', size: 1, sha256: '0'.repeat(64) }] },
+      notes: { baseDir: 'x', count: 1, files: [{ rel: 'a.md', size: 1, sha256: '0'.repeat(64) }] },
+      uploads: { baseDir: 'x', count: 0, files: [] },
+      dataDir: 'x',
+    })
+    const tamper = async (label, mutate) => {
+      const src = join(t, 'bak-' + label)
+      mkdirSync(src, { recursive: true })
+      mkdirSync(join(src, 'notes'), { recursive: true }); mkdirSync(join(src, 'uploads'), { recursive: true })
+      writeFileSync(join(src, 'tagtime.db'), 'x', 'utf8'); writeFileSync(join(src, 'notes', 'a.md'), '# hi', 'utf8')
+      const m = baseManifest(); mutate(m)
+      writeFileSync(join(src, 'manifest.json'), JSON.stringify(m), 'utf8')
+      const r = await runCLI(['restore', src, '--force'], E.envObj)
+      report(r.code !== 0, `S7 恶意 manifest ${label} 恢复拒绝`, (r.stderr + r.stdout).trim().slice(0, 60))
+      report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# hello backup', `S7 ${label} 未改动 notes 数据`)
+    }
+    await tamper('notes-..', (m) => { m.notes.files[0].rel = '../evil.md' })
+    await tamper('uploads-abs', (m) => { m.uploads.files = [{ rel: 'C:/evil.bin', size: 1, sha256: '0'.repeat(64) }] })
+    await tamper('db-escape', (m) => { m.database.files[0].file = 'backup-sneaky.db' })
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  // ===== S8：跨卷(EXDEV)恢复安全失败，原数据保留（无第二卷则跳过） =====
+  {
+    // 探测与临时目录不同卷的可用盘符（Windows）；找不到则跳过并说明。
+    const tmpVol = parse(tmpdir()).root
+    let altVol = null
+    if (process.platform === 'win32') {
+      for (const L of 'DEFGHIJKLMNOPQRSTUVWXYZ') {
+        const r = L + ':\\'
+        if (r !== tmpVol) { try { const s = readdirSync(r); if (s.length) { altVol = r; break } } catch { /* 不存在或不可读 */ } }
+      }
+    }
+    if (!altVol) {
+      report(true, 'S8 无第二卷，跳过 EXDEV 回归（单卷环境）')
+    } else {
+      const t = join(altVol, '.tagtime-exdev-' + Date.now())
+      const E = makeEnv(t, basePort + 8)
+      seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+      const dest = join(t, 'backups', 'out')
+      await runCLI(['backup', '--dest', dest], E.envObj)
+      // 覆盖目标数据，制造"覆盖前已有内容"以触发替换阶段
+      writeFileSync(join(E.notes, 'a.md'), '# modified', 'utf8')
+      const before = readFileSync(join(E.notes, 'a.md'), 'utf8')
+      // 强制 staging 放到系统临时目录(不同卷) → replaceStage→target 触发 EXDEV
+      const env2 = { ...E.envObj, BACKUP_RESTORE_STAGING: 'os-tmp' }
+      const r = await runCLI(['restore', dest, '--force'], env2)
+      // 命令应失败（EXDEV），且原数据未丢失（可回滚恢复 park 或至少未被清空破坏）
+      report(r.code !== 0, 'S8 跨卷恢复读取EXDEV安全失败', (r.stderr + r.stdout).trim().slice(0, 80))
+      report(existsSync(join(E.notes, 'a.md')) && readFileSync(join(E.notes, 'a.md'), 'utf8') === before, 'S8 EXDEV 后 notes 数据保留')
+      rmSync(t, { recursive: true, force: true })
+    }
+  }
+
+  // ===== S9：陈旧 SQLite sidecar 集合清理（备份无 sidecar、目标有陈旧 -wal/-shm） =====
+  {
+    const t = mkdtempSync(join(tmpdir(), 'tt-cli-s9-')); const E = makeEnv(t, basePort + 9)
+    seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    // 备份时不带 sidecar（仅主库）
+    const dest = join(t, 'backups', 'out')
+    await runCLI(['backup', '--dest', dest], E.envObj)
+    // 恢复前给目标塞入陈旧 -wal/-shm
+    writeFileSync(E.db + '-wal', 'stale-wal', 'utf8')
+    writeFileSync(E.db + '-shm', 'stale-shm', 'utf8')
+    const r = await runCLI(['restore', dest, '--force'], E.envObj)
+    report(r.code === 0, 'S9 含陈旧 sidecar 时恢复成功', r.stderr.trim() || r.stdout.split('\n').pop())
+    report(!existsSync(E.db + '-wal') && !existsSync(E.db + '-shm'), 'S9 陈旧的 -wal/-shm 被清理')
+    report(existsSync(E.db), 'S9 主库保留并恢复')
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  console.log(ok ? '[drill] 结果：通过（CLI 备份/恢复 9 场景）' : '[drill] 结果：存在失败')
 } catch (e) {
   ok = false
   console.error('[drill] 失败:', e.message || e)
