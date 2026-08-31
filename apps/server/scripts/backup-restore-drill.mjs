@@ -5,7 +5,7 @@
 //   npm run build -w apps/server
 //   npm run backup:drill -w apps/server
 import { spawn, execSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, cpSync, mkdirSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, cpSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -149,7 +149,11 @@ try {
   }
   const noteFiles = readdirSync(notesDir).filter((f) => f.endsWith('.md')).sort()
   report(noteFiles.length >= 3, '备份包含 notes/', `共 ${noteFiles.length} 个 .md`)
-  report(existsSync(join(backupDir, 'data', 'backup.db')) || existsSync(dbAbs), '备份包含 SQLite 数据库')
+  const dbBackup = join(backupDir, 'data', 'backup.db')
+  // 只断言备份目录中的主库存在；WAL/SHM 依附文件单独检查（存在才复制，属可选加固）
+  report(existsSync(dbBackup), '备份包含 SQLite 主库', dbBackup)
+  const walShm = ['-wal', '-shm'].filter((s) => existsSync(dbBackup + s))
+  if (walShm.length) console.log(`[drill] 备份同时含 SQLite 依附文件: ${walShm.join('|')}`)
   console.log(`[drill] 备份目录: ${backupDir}`)
 
   // 3) 破坏：清空 notes/ 正文 + 删除数据库（模拟整体丢失）
@@ -157,8 +161,7 @@ try {
   for (const suffix of ['', '-wal', '-shm']) rmSync(dbAbs + suffix, { force: true })
   report((readdirSync(notesDir).filter((f) => f.endsWith('.md')).length) === 0, '已破坏：notes/ 与数据库清空')
 
-  // 4) 恢复：从备份还原 SQLite + notes/
-  cpSync(join(backupDir, 'data'), dataDir, { recursive: true })
+  // 4) 恢复：从备份还原 SQLite + notes/（本演练服务端使用 dbAbs 作库，恢复目标明确为 dbAbs，不写 dataDir）
   for (const suffix of ['', '-wal', '-shm']) {
     const b = join(backupDir, 'data', 'backup.db' + suffix)
     if (existsSync(b)) cpSync(b, dbAbs + suffix)
