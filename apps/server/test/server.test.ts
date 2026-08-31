@@ -12,7 +12,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'tt-int-'))
 const notesDir = join(tmpRoot, 'notes')
 process.env.DATA_DIR = join(tmpRoot, 'data')
 process.env.NOTES_DIR = notesDir
-process.env.DATABASE_URL = `file:${join(tmpRoot, 'int.db')}`
+process.env.DATABASE_URL = `file:${join(tmpRoot, 'int.db').replace(/\\/g, '/')}`
 
 // 先往临时库 push 真实 schema（用 node 直接调 prisma CLI，避免 win 下 sh 脚本不可执行）
 execSync('node node_modules/prisma/build/index.js db push --skip-generate --schema src/schema.prisma', {

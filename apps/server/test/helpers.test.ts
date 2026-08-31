@@ -16,7 +16,7 @@ import { join } from 'node:path'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'tt-helpers-'))
 process.env.DATA_DIR = join(tmpRoot, 'data')
 process.env.NOTES_DIR = join(tmpRoot, 'notes')
-process.env.DATABASE_URL = `file:${join(tmpRoot, 'test.db')}`
+process.env.DATABASE_URL = `file:${join(tmpRoot, 'test.db').replace(/\\/g, '/')}`
 
 let mod: typeof import('../src/notes.js')
 before(async () => {

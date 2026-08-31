@@ -222,7 +222,9 @@ export default async function noteRoutes(app: FastifyInstance) {
     })
   })
 
-  // 重命名（应用内重命名，保留 Note ID；锁内重新读取最新记录，并改写其它正文的旧标题链接）
+  // 重命名（应用内重命名，保留 Note ID）
+  // 锁策略：先取全局 __rename 锁（串行化所有重命名，跨笔记互相链接时不会 A 等 B、B 等 A），
+  // 再取该笔记当前路径锁（与针对它的 PUT/DELETE 互斥）；锁内重新读取最新记录。
   app.patch('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
     const { title } = req.body as { title?: string }
@@ -230,40 +232,44 @@ export default async function noteRoutes(app: FastifyInstance) {
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
 
-    return withNoteLock(note.path, async () => {
-      // 锁内重新查询，避免并发重命名使用失效的旧快照（旧 path/title/titleKey）
+    return withNoteLock('__rename', async () => {
       const fresh = await prisma.note.findUnique({ where: { id } })
       if (!fresh) return reply.code(404).send({ error: '笔记不存在' })
+      return withNoteLock(fresh.path, async () => {
+        const cur = await prisma.note.findUnique({ where: { id } })
+        if (!cur) return reply.code(404).send({ error: '笔记不存在' })
 
-      const newTitle = title.trim()
-      const newKey = normalizeTitleKey(newTitle)
-      const dup = await prisma.note.findMany({
-        where: { titleKey: newKey, id: { not: id } },
-        select: { id: true },
-      })
-      if (dup.length) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
+        const newTitle = title.trim()
+        const newKey = normalizeTitleKey(newTitle)
+        const dup = await prisma.note.findMany({
+          where: { titleKey: newKey, id: { not: id } },
+          select: { id: true },
+        })
+        if (dup.length) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
 
-      const newBase = titleToFilename(newTitle)
-      const newPath = `${newBase}.md`
-      if (newPath !== fresh.path && existsSync(noteAbsPath(newPath))) {
-        return reply.code(409).send({ error: '目标文件名已存在' })
-      }
-      if (newPath !== fresh.path) {
-        await atomicWriteFile(noteAbsPath(newPath), await readNoteFile(fresh.path))
-        await unlink(noteAbsPath(fresh.path)).catch(() => {})
-      }
-      await prisma.note.update({
-        where: { id },
-        data: { path: newPath, title: newTitle, titleKey: newKey },
+        const newBase = titleToFilename(newTitle)
+        const newPath = `${newBase}.md`
+        if (newPath !== cur.path && existsSync(noteAbsPath(newPath))) {
+          return reply.code(409).send({ error: '目标文件名已存在' })
+        }
+        if (newPath !== cur.path) {
+          await atomicWriteFile(noteAbsPath(newPath), await readNoteFile(cur.path))
+          await unlink(noteAbsPath(cur.path)).catch(() => {})
+        }
+        await prisma.note.update({
+          where: { id },
+          data: { path: newPath, title: newTitle, titleKey: newKey },
+        })
+        await syncNoteFileLocked(newPath, 'api')
+        // 改写其它笔记正文里指向旧标题的 [[旧标题]]/[[旧标题|别名]] 并重建索引。
+        // 已在全局 __rename 锁内，且被重命名笔记自身通过 skipPath 跳过（避免与上方路径锁重复加锁）。
+        const renamedOwn = cur.title
+        const rewritten = newKey !== normalizeTitleKey(renamedOwn)
+          ? await rewriteNoteTitleInOthers(renamedOwn, newTitle, newPath)
+          : 0
+        notesEmitter.emit('note.renamed', { id, path: newPath, rewritten })
+        return reply.send({ id, path: newPath, title: newTitle, rewritten })
       })
-      await syncNoteFileLocked(newPath, 'api')
-      // 把其它笔记正文里指向旧标题的 [[旧标题]]/[[旧标题|别名]] 改写为新标题并重建索引，
-      // 使文本与数据库关系保持一致（否则重启重解析后旧链接会解析失败）。
-      const rewritten = newKey !== normalizeTitleKey(fresh.title)
-        ? await rewriteNoteTitleInOthers(fresh.title, newTitle)
-        : 0
-      notesEmitter.emit('note.renamed', { id, path: newPath, rewritten })
-      return reply.send({ id, path: newPath, title: newTitle, rewritten })
     })
   })
 

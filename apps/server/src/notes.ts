@@ -298,19 +298,29 @@ export function rewriteTitleLinks(content: string, oldTitle: string, newTitle: s
 }
 
 // 扫描根目录全部 .md，把其它笔记正文里的 [[旧标题]]/[[旧标题|别名]] 改写为新标题并重建出链索引。
-// 调用方须已把被重命名笔记的 title/titleKey 更新为新值，使后续 rebuild 能把 [[新标题]] 解析到该笔记。
-export async function rewriteNoteTitleInOthers(oldTitle: string, newTitle: string): Promise<number> {
+// 每个文件的“读→改写→写→同步索引”整体放进该文件自身的锁（与普通 PUT/DELETE 互斥）。
+// 调用方须持有全局重命名锁(__rename) 且已把被重命名笔记的 title/titleKey 更新为新值。
+// skipPath：被重命名笔记自身（其标题就是被改的那篇，正文里的自引用不应按“别的笔记”改写）。
+export async function rewriteNoteTitleInOthers(
+  oldTitle: string,
+  newTitle: string,
+  skipPath?: string,
+): Promise<number> {
   let count = 0
   const files = await collectMarkdownFiles()
   for (const f of files) {
-    const abs = noteAbsPath(f)
-    const content = await readFile(abs, 'utf8').catch(() => null)
-    if (content === null) continue
-    const next = rewriteTitleLinks(content, oldTitle, newTitle)
-    if (next === content) continue
-    await atomicWriteFile(abs, next)
-    await syncNoteFile(f, 'api')
-    count++
+    if (f === skipPath) continue
+    const done = await withNoteLock(f, async () => {
+      const abs = noteAbsPath(f)
+      const content = await readFile(abs, 'utf8').catch(() => null)
+      if (content === null) return false
+      const next = rewriteTitleLinks(content, oldTitle, newTitle)
+      if (next === content) return false
+      await atomicWriteFile(abs, next)
+      await syncNoteFileLocked(f, 'api') // 已持有 f 的锁，走不加锁的核心逻辑
+      return true
+    })
+    if (done) count++
   }
   return count
 }
