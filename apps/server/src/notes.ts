@@ -8,6 +8,9 @@ import { NOTES_DIR } from './config.js'
 import { parseLinks, normalizeTitleKey, isEntityLinkKey } from './links.js'
 import { rebuildEntityLinksForNote } from './notes-entities.js'
 
+// 供测试复用：笔记目录解析结果
+export { NOTES_DIR }
+
 // 笔记相关事件，阶段三由 WebSocket 订阅并广播
 export const notesEmitter = new EventEmitter()
 
@@ -74,14 +77,17 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
     await rename(tmp, filePath)
   } catch (err: any) {
     if (err.code !== 'EEXIST' && err.code !== 'EPERM' && err.code !== 'ENOTEMPTY') throw err
-    // 旧文件先备份为 .bak
+    // 目标已存在，需先备份。若旧文件不存在（首次写入场景的防御分支），直接替换
+    if (!existsSync(filePath)) {
+      await rename(tmp, filePath)
+      return
+    }
     try {
       await rename(filePath, bak)
     } catch {
-      // 旧文件不存在或无法移动：尽力直接替换
-      await unlink(filePath).catch(() => {})
-      await rename(tmp, filePath)
-      return
+      // 旧文件无法备份：坚决不删除旧正文，保留原文件并上抛，避免写中断丢数据
+      await unlink(tmp).catch(() => {})
+      throw new Error('原子写失败：无法备份旧文件，原正文已保留')
     }
     try {
       await rename(tmp, filePath)
@@ -253,6 +259,62 @@ export async function removeNoteByPath(relPath: string): Promise<'deleted' | 'mi
   return enqueue(relPath, () => removeNoteLocked(relPath))
 }
 
+// 把正文中的 [[旧标题]] / [[旧标题|别名]] 改写为新标题（大小写不敏感，保留别名）。
+// 跳过 fenced 代码块、行内代码与转义的 \[[ ，与 parseLinks 的语义保持一致。命中则返回改写后内容。
+export function rewriteTitleLinks(content: string, oldTitle: string, newTitle: string): string {
+  const oldKey = normalizeTitleKey(oldTitle)
+  const masked: boolean[] = new Array(content.length).fill(false)
+  const maskCode = /```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`/g
+  let cm: RegExpExecArray | null
+  while ((cm = maskCode.exec(content)) !== null) {
+    for (let j = cm.index; j < cm.index + cm[0].length; j++) masked[j] = true
+  }
+  for (let j = 0; j < content.length - 1; j++) {
+    if (content[j] === '\\' && content[j + 1] === '[') {
+      masked[j] = true
+      masked[j + 1] = true
+    }
+  }
+  const re = /\[\[([^\[\]]+)\]\]/g
+  const parts: string[] = []
+  let last = 0
+  let changed = false
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    if (masked[m.index]) continue
+    const raw = m[1].trim()
+    const i = raw.indexOf('|')
+    const target = i === -1 ? raw : raw.slice(0, i).trim()
+    if (normalizeTitleKey(target) === oldKey) {
+      const alias = i === -1 ? '' : raw.slice(i)
+      parts.push(content.slice(last, m.index), `[[${newTitle}${alias}]]`)
+      last = m.index + m[0].length
+      changed = true
+    }
+  }
+  if (!changed) return content
+  parts.push(content.slice(last))
+  return parts.join('')
+}
+
+// 扫描根目录全部 .md，把其它笔记正文里的 [[旧标题]]/[[旧标题|别名]] 改写为新标题并重建出链索引。
+// 调用方须已把被重命名笔记的 title/titleKey 更新为新值，使后续 rebuild 能把 [[新标题]] 解析到该笔记。
+export async function rewriteNoteTitleInOthers(oldTitle: string, newTitle: string): Promise<number> {
+  let count = 0
+  const files = await collectMarkdownFiles()
+  for (const f of files) {
+    const abs = noteAbsPath(f)
+    const content = await readFile(abs, 'utf8').catch(() => null)
+    if (content === null) continue
+    const next = rewriteTitleLinks(content, oldTitle, newTitle)
+    if (next === content) continue
+    await atomicWriteFile(abs, next)
+    await syncNoteFile(f, 'api')
+    count++
+  }
+  return count
+}
+
 // 深扫 NOTES_DIR 下的全部 .md（跳过 .tmp/.bak 与 assets/）
 async function collectMarkdownFiles(dir = NOTES_DIR): Promise<string[]> {
   const out: string[] = []
@@ -272,10 +334,10 @@ async function collectMarkdownFiles(dir = NOTES_DIR): Promise<string[]> {
   return out
 }
 
-// 清理启动时残留的临时文件，并恢复中断的原子写：
+// 启动时清理残留的临时文件，并恢复中断的原子写：
 // .tmp 是没写完的产物，直接丢弃；.bak 是上一次替换时暂存的旧正文，
 // 目标文件若还在就直接删 .bak，若已缺失则从 .bak 恢复，避免正文丢失。
-async function cleanupTmpFiles(): Promise<void> {
+export async function cleanupTmpFiles(): Promise<void> {
   const files = await readdir(NOTES_DIR).catch(() => [])
   for (const f of files) {
     if (f.endsWith('.tmp')) {
@@ -299,7 +361,8 @@ export async function reconcileNotesOnStartup(): Promise<void> {
   const dbNotes = await prisma.note.findMany({ select: { id: true, path: true } })
   for (const n of dbNotes) {
     if (!fileSet.has(n.path)) {
-      await prisma.note.delete({ where: { id: n.id } }).catch(() => {})
+      // 复用 removeNoteLocked：删除前先把所有指向它的链接置为 isResolved=false，避免残留“已解析”指向不存在目标
+      await removeNoteLocked(n.path)
     }
   }
 }
