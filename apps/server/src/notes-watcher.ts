@@ -35,6 +35,8 @@ export function trackNotesDirectory() {
   watcher.on('all', (event, absPath) => {
     if (!absPath.endsWith('.md')) return
     const rel = relOf(absPath)
+    // 第一版仅支持 notes/ 根目录单层，子目录文件与启动扫描保持一致，一律忽略
+    if (rel.includes('/') || rel.includes('\\')) return
     if (event === 'unlink' || event === 'unlinkDir') {
       void removeNoteByPath(rel)
     } else if (event === 'add' || event === 'change') {

@@ -511,6 +511,14 @@ function EntityGroup({ label, items, onGo }: {
                 {e.linkText || e.entityKey}（失效）
               </span>
             )}
+            {e.type === 'memo' && e.timeEntry && (
+              <span
+                className="text-[10px] text-gray-500 bg-gray-100 dark:bg-gray-800 rounded px-1 py-0.5 whitespace-nowrap"
+                title="该日记关联的计时记录"
+              >
+                ⏱{e.timeEntry.tagName || '记录'}{e.timeEntry.endTime ? '' : '·进行中'}
+              </span>
+            )}
           </li>
         ))}
       </ul>

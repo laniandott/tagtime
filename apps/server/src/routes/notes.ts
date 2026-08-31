@@ -1,14 +1,15 @@
 import type { FastifyInstance } from 'fastify'
-import { join } from 'node:path'
 import { unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import prisma from '../db.js'
-import { NOTES_DIR } from '../config.js'
 import {
   atomicWriteFile,
   readNoteFile,
-  syncNoteFile,
+  syncNoteFileLocked,
+  withNoteLock,
+  removeNoteLocked,
   titleToFilename,
+  noteAbsPath,
   notesEmitter,
 } from '../notes.js'
 import { normalizeTitleKey } from '../links.js'
@@ -172,30 +173,32 @@ export default async function noteRoutes(app: FastifyInstance) {
     return getRelatedEntities(id)
   })
 
-  // 新建笔记
+  // 新建笔记（创建带全局串行锁：查重→生成文件名→写文件→同步索引 整体原子化）
   app.post('/', async (req, reply) => {
     const { title, content } = req.body as { title?: string; content?: string }
     if (!title || !title.trim()) return reply.code(400).send({ error: '需要标题' })
 
-    let pathName = titleToFilename(title)
-    let relPath = `${pathName}.md`
-    let n = 2
-    while (existsSync(join(NOTES_DIR, relPath))) {
-      relPath = `${pathName}-${n}.md`
-      n++
-    }
+    return withNoteLock('__create', async () => {
+      let pathName = titleToFilename(title)
+      let relPath = `${pathName}.md`
+      let n = 2
+      while (existsSync(noteAbsPath(relPath))) {
+        relPath = `${pathName}-${n}.md`
+        n++
+      }
 
-    const titleKey = normalizeTitleKey(title)
-    const dup = await prisma.note.findUnique({ where: { titleKey } })
-    if (dup) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
+      const titleKey = normalizeTitleKey(title)
+      const dup = await prisma.note.findUnique({ where: { titleKey } })
+      if (dup) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
 
-    await atomicWriteFile(join(NOTES_DIR, relPath), content ?? '')
-    const synced = await syncNoteFile(relPath, 'api')
-    const note = await prisma.note.findUnique({ where: { path: relPath } })
-    return reply.code(201).send({ id: note?.id, path: relPath, revision: note?.revision ?? 0 })
+      await atomicWriteFile(noteAbsPath(relPath), content ?? '')
+      await syncNoteFileLocked(relPath, 'api')
+      const note = await prisma.note.findUnique({ where: { path: relPath } })
+      return reply.code(201).send({ id: note?.id, path: relPath, revision: note?.revision ?? 0 })
+    })
   })
 
-  // 更新内容（带 revision 冲突校验）
+  // 更新内容（带 revision 冲突校验；读校验+写文件+同步索引 串行化，杜绝并发静默覆盖）
   app.put('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
     const { content, revision } = req.body as { content?: string; revision?: number }
@@ -204,17 +207,18 @@ export default async function noteRoutes(app: FastifyInstance) {
     }
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
-    if (revision !== note.revision) {
-      return reply.code(409).send({
-        error: '版本冲突：服务器已更新',
-        serverRevision: note.revision,
-      })
-    }
 
-    await atomicWriteFile(join(NOTES_DIR, note.path), content)
-    const synced = await syncNoteFile(note.path, 'api')
-    const updated = await prisma.note.findUnique({ where: { id } })
-    return { id, path: note.path, revision: updated?.revision ?? note.revision }
+    return withNoteLock(note.path, async () => {
+      const fresh = await prisma.note.findUnique({ where: { id } })
+      if (!fresh) return reply.code(404).send({ error: '笔记不存在' })
+      if (revision !== fresh.revision) {
+        return reply.code(409).send({ error: '版本冲突：服务器已更新', serverRevision: fresh.revision })
+      }
+      await atomicWriteFile(noteAbsPath(fresh.path), content)
+      await syncNoteFileLocked(fresh.path, 'api')
+      const updated = await prisma.note.findUnique({ where: { id } })
+      return reply.send({ id, path: fresh.path, revision: updated?.revision ?? fresh.revision })
+    })
   })
 
   // 重命名（应用内重命名，保留 Note ID）
@@ -225,44 +229,43 @@ export default async function noteRoutes(app: FastifyInstance) {
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
 
-    const newKey = normalizeTitleKey(title)
-    const dup = await prisma.note.findMany({
-      where: { titleKey: newKey, id: { not: id } },
-      select: { id: true },
-    })
-    if (dup.length) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
+    return withNoteLock(note.path, async () => {
+      const newKey = normalizeTitleKey(title)
+      const dup = await prisma.note.findMany({
+        where: { titleKey: newKey, id: { not: id } },
+        select: { id: true },
+      })
+      if (dup.length) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
 
-    const newBase = titleToFilename(title)
-    const newPath = `${newBase}.md`
-    if (newPath !== note.path && existsSync(join(NOTES_DIR, newPath))) {
-      return reply.code(409).send({ error: '目标文件名已存在' })
-    }
-    if (newPath !== note.path) {
-      await atomicWriteFile(join(NOTES_DIR, newPath), await readNoteFile(note.path))
-      await unlink(join(NOTES_DIR, note.path)).catch(() => {})
-    }
-    await prisma.note.update({
-      where: { id },
-      data: { path: newPath, title: title.trim(), titleKey: newKey },
+      const newBase = titleToFilename(title)
+      const newPath = `${newBase}.md`
+      if (newPath !== note.path && existsSync(noteAbsPath(newPath))) {
+        return reply.code(409).send({ error: '目标文件名已存在' })
+      }
+      if (newPath !== note.path) {
+        await atomicWriteFile(noteAbsPath(newPath), await readNoteFile(note.path))
+        await unlink(noteAbsPath(note.path)).catch(() => {})
+      }
+      await prisma.note.update({
+        where: { id },
+        data: { path: newPath, title: title.trim(), titleKey: newKey },
+      })
+      await syncNoteFileLocked(newPath, 'api')
+      notesEmitter.emit('note.renamed', { id, path: newPath })
+      return reply.send({ id, path: newPath, title: title.trim() })
     })
-    await syncNoteFile(newPath, 'api')
-    notesEmitter.emit('note.renamed', { id, path: newPath })
-    return { id, path: newPath, title: title.trim() }
   })
 
-  // 删除
+  // 删除（与 watcher 共用同一把 per-path 锁：先删文件，再删索引；watcher 后续事件会因同锁幂等跳过）
   app.delete('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
-    await unlink(join(NOTES_DIR, note.path)).catch(() => {})
-    // 删除前先把指向该笔记的入链置为未解析（targetNoteId 由级联置空）
-    await prisma.noteLink.updateMany({
-      where: { targetNoteId: id },
-      data: { isResolved: false, targetNoteId: null },
+
+    return withNoteLock(note.path, async () => {
+      await unlink(noteAbsPath(note.path)).catch(() => {})
+      await removeNoteLocked(note.path)
+      return reply.send({ ok: true })
     })
-    await prisma.note.delete({ where: { id } })
-    notesEmitter.emit('note.deleted', { id, path: note.path })
-    return { ok: true }
   })
 }

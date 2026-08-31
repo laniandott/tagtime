@@ -1,14 +1,13 @@
-import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import prisma from './db.js'
-import { NOTES_DIR } from './config.js'
 import { parseEntityLinks, type EntityLinkType } from './links.js'
+import { noteAbsPath } from './notes.js'
 
 // 重建某笔记的 TagTime 实体关联（先删后插，按 type+entityKey 去重）
 export async function rebuildEntityLinksForNote(noteId: string): Promise<void> {
   const note = await prisma.note.findUnique({ where: { id: noteId } })
   if (!note) return
-  const content = await readFile(join(NOTES_DIR, note.path), 'utf8').catch(() => '')
+  const content = await readFile(noteAbsPath(note.path), 'utf8').catch(() => '')
   const links = parseEntityLinks(content)
   await prisma.noteEntityLink.deleteMany({ where: { noteId } })
   if (!links.length) return
@@ -24,12 +23,23 @@ export async function rebuildEntityLinksForNote(noteId: string): Promise<void> {
   }
 }
 
+// 关联的计时记录信息（经 memo.timeEntry 间接关联，阶段五范围）：
+// 笔记不直接建 [[timeEntry:]] 链接，而是通过 [[memo:<id>]] 带到 TimeEntry
+export interface RelatedTimeEntry {
+  id: string
+  startTime: string
+  endTime: string | null
+  tagName: string | null
+}
+
 export interface RelatedEntity {
   type: EntityLinkType
   entityKey: string
   linkText: string
   resolved: boolean
   name?: string // 解析后的显示名
+  timeEntry?: RelatedTimeEntry | null // 仅 memo 有：该日记挂靠的计时记录
+  memoTag?: string | null // 仅 memo 有：该日记的标签
 }
 
 // 解析某笔记的关联实体：把 tag/todo/memo 对应到真实对象，date 恒解析
@@ -50,7 +60,15 @@ export async function getRelatedEntities(
       ? prisma.todo.findMany({ where: { title: { in: todoKeys } } })
       : Promise.resolve([]),
     memoIds.length
-      ? prisma.memo.findMany({ where: { id: { in: memoIds } } })
+      ? prisma.memo.findMany({
+          where: { id: { in: memoIds } },
+          include: {
+            tag: { select: { name: true } },
+            timeEntry: {
+              select: { id: true, startTime: true, endTime: true, tag: { select: { name: true } } },
+            },
+          },
+        })
       : Promise.resolve([]),
   ])
 
@@ -69,7 +87,22 @@ export async function getRelatedEntities(
     }
     if (l.type === 'memo') {
       const m = memoById.get(l.entityKey)
-      return { type: 'memo', entityKey: l.entityKey, linkText: l.linkText, resolved: !!m, name: m?.content.slice(0, 40) }
+      return {
+        type: 'memo',
+        entityKey: l.entityKey,
+        linkText: l.linkText,
+        resolved: !!m,
+        name: m ? m.content.slice(0, 40) : undefined,
+        timeEntry: m?.timeEntry
+          ? {
+              id: m.timeEntry.id,
+              startTime: m.timeEntry.startTime.toISOString(),
+              endTime: m.timeEntry.endTime ? m.timeEntry.endTime.toISOString() : null,
+              tagName: m.timeEntry.tag?.name ?? null,
+            }
+          : null,
+        memoTag: m?.tag?.name ?? null,
+      }
     }
     return { type: 'date', entityKey: l.entityKey, linkText: l.linkText, resolved: true, name: l.entityKey }
   }

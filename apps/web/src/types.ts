@@ -205,6 +205,8 @@ export interface RelatedEntity {
   linkText: string
   resolved: boolean
   name?: string
+  timeEntry?: { id: string; startTime: string; endTime: string | null; tagName: string | null } | null
+  memoTag?: string | null
 }
 
 export interface RelatedEntities {
