@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { posix } from 'node:path'
 import prisma from '../db.js'
 import {
   atomicWriteFile,
@@ -13,10 +14,16 @@ import {
   notesEmitter,
   rewriteNoteTitleInOthers,
   suspendWatcherPaths,
+  normalizeNoteFolder,
+  ensureNoteFolder,
+  listNoteFolders,
+  removeEmptyNoteFolder,
 } from '../notes.js'
 import { normalizeTitleKey } from '../links.js'
+import { CONTENT_LIMITS } from '../config.js'
 import { getLocalGraph, getGlobalGraph } from '../notes-graph.js'
 import { getRelatedEntities, getNotesByEntity } from '../notes-entities.js'
+import { singleQueryString } from './query.js'
 
 export type NoteListQuery = {
   q?: string
@@ -48,8 +55,10 @@ export default async function noteRoutes(app: FastifyInstance) {
   })
 
   // 列表：支持 ?q= 按标题/路径过滤
-  app.get('/', async (req) => {
-    const { q } = req.query as NoteListQuery
+  app.get('/', async (req, reply) => {
+    const rawQ = (req.query as Record<string, unknown>).q
+    const q = singleQueryString(rawQ)
+    if (q === null) return reply.code(400).send({ error: 'q 必须是单个字符串' })
     const where = q
       ? {
           OR: [
@@ -84,8 +93,10 @@ export default async function noteRoutes(app: FastifyInstance) {
   })
 
   // 输入补全候选
-  app.get('/autocomplete', async (req) => {
-    const { q } = req.query as NoteListQuery
+  app.get('/autocomplete', async (req, reply) => {
+    const rawQ = (req.query as Record<string, unknown>).q
+    const q = singleQueryString(rawQ)
+    if (q === null) return reply.code(400).send({ error: 'q 必须是单个字符串' })
     const where = q
       ? { OR: [{ title: { contains: q } }, { path: { contains: q } }] }
       : {}
@@ -98,24 +109,77 @@ export default async function noteRoutes(app: FastifyInstance) {
     return notes
   })
 
+  // 文件夹管理：目录直接落在 NOTES_DIR 下，空字符串表示根目录。
+  app.get('/folders', async () => ({ folders: await listNoteFolders() }))
+
+  app.post('/folders', async (req, reply) => {
+    const { path } = (req.body ?? {}) as { path?: string }
+    if (typeof path !== 'string' || !path.trim()) return reply.code(400).send({ error: '需要文件夹路径' })
+    try {
+      const folder = normalizeNoteFolder(path)
+      if (!folder) return reply.code(400).send({ error: '不能创建笔记根目录' })
+      await ensureNoteFolder(folder)
+      return reply.code(201).send({ path: folder })
+    } catch (e: any) {
+      return reply.code(400).send({ error: e.message })
+    }
+  })
+
+  app.delete('/folders', async (req, reply) => {
+    const path = singleQueryString((req.query as Record<string, unknown>).path)
+    if (path === null) return reply.code(400).send({ error: 'path 必须是单个字符串' })
+    if (typeof path !== 'string' || !path.trim()) return reply.code(400).send({ error: '需要文件夹路径' })
+    try {
+      await removeEmptyNoteFolder(path)
+      return reply.send({ ok: true })
+    } catch (e: any) {
+      const status = e?.code === 'ENOTEMPTY' || e?.code === 'EEXIST' || /不为空/.test(e.message) ? 409 : 400
+      return reply.code(status).send({ error: e.message })
+    }
+  })
+
   // 全局关系图（必须置于 /:id 之前，避免被单段通配吞掉）
-  app.get('/graph', async (req) => {
-    const { q, dir, recent, limit } = req.query as {
-      q?: string; dir?: string; recent?: string; limit?: string
+  app.get('/graph', async (req, reply) => {
+    const raw = req.query as Record<string, unknown>
+    const q = singleQueryString(raw.q)
+    const dir = singleQueryString(raw.dir)
+    const recent = singleQueryString(raw.recent)
+    const limit = singleQueryString(raw.limit)
+    if (q === null || dir === null || recent === null || limit === null) {
+      return reply.code(400).send({ error: '关系图查询参数必须是单个字符串' })
+    }
+    if (q && q.length > 200 || dir && dir.length > 1024) {
+      return reply.code(400).send({ error: '关系图筛选条件过长' })
+    }
+    if (recent !== undefined) {
+      const value = Number(recent)
+      if (!Number.isInteger(value) || value < 0 || value > 3660) {
+        return reply.code(400).send({ error: 'recent 必须是 0 到 3660 的整数' })
+      }
+    }
+    if (limit !== undefined) {
+      const value = Number(limit)
+      if (!Number.isInteger(value) || value < 1 || value > 500) {
+        return reply.code(400).send({ error: 'limit 必须是 1 到 500 的整数' })
+      }
     }
     const data = await getGlobalGraph({
       q,
       dir,
-      recentDays: recent ? Number(recent) : undefined,
-      limit: limit ? Number(limit) : undefined,
+      recentDays: recent && Number.isFinite(Number(recent)) ? Number(recent) : undefined,
+      limit: limit && Number.isFinite(Number(limit)) ? Number(limit) : undefined,
     })
     return data
   })
 
   // 反查：挂靠到某个 TagTime 实体（tag/todo/date/memo）的笔记
   app.get('/linked', async (req, reply) => {
-    const { type, key } = req.query as { type?: string; key?: string }
+    const raw = req.query as Record<string, unknown>
+    const type = singleQueryString(raw.type)
+    const key = singleQueryString(raw.key)
+    if (type === null || key === null) return reply.code(400).send({ error: 'type 和 key 必须是单个字符串' })
     if (!type || !key) return reply.code(400).send({ error: '需要 type 和 key' })
+    if (!['tag', 'todo', 'date', 'memo'].includes(type)) return reply.code(400).send({ error: 'type 无效' })
     return getNotesByEntity(type as 'tag' | 'todo' | 'date' | 'memo', key)
   })
 
@@ -133,7 +197,13 @@ export default async function noteRoutes(app: FastifyInstance) {
       },
     })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
-    const content = await readNoteFile(note.path).catch(() => '')
+    let content: string
+    try {
+      content = await readNoteFile(note.path)
+    } catch (error) {
+      req.log.error(error, `读取笔记失败: ${note.path}`)
+      return reply.code(503).send({ error: '笔记文件暂时无法读取，请勿覆盖保存' })
+    }
     return {
       id: note.id,
       path: note.path,
@@ -158,13 +228,23 @@ export default async function noteRoutes(app: FastifyInstance) {
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
     reply.type('text/markdown; charset=utf-8')
-    return readNoteFile(note.path)
+    try {
+      return await readNoteFile(note.path)
+    } catch (error) {
+      req.log.error(error, `读取笔记失败: ${note.path}`)
+      return reply.code(503).send({ error: '笔记文件暂时无法读取' })
+    }
   })
 
   // 局部关系图：以当前笔记为中心，depth 默认 1
   app.get('/:id/graph', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const depth = Number((req.query as { depth?: string }).depth ?? 1) || 1
+    const rawDepth = singleQueryString((req.query as Record<string, unknown>).depth)
+    if (rawDepth === null) return reply.code(400).send({ error: 'depth 必须是单个字符串' })
+    const depth = rawDepth === undefined ? 1 : Number(rawDepth)
+    if (!Number.isInteger(depth) || depth < 1 || depth > 2) {
+      return reply.code(400).send({ error: 'depth 必须是 1 或 2' })
+    }
     const data = await getLocalGraph(id, depth)
     if (!data) return reply.code(404).send({ error: '笔记不存在' })
     return data
@@ -180,15 +260,33 @@ export default async function noteRoutes(app: FastifyInstance) {
 
   // 新建笔记（创建带全局串行锁：查重→生成文件名→写文件→同步索引 整体原子化）
   app.post('/', async (req, reply) => {
-    const { title, content } = req.body as { title?: string; content?: string }
-    if (!title || !title.trim()) return reply.code(400).send({ error: '需要标题' })
+    const { title, content, folder = '' } = (req.body ?? {}) as { title?: string; content?: string; folder?: string }
+    if (typeof title !== 'string' || !title.trim()) return reply.code(400).send({ error: '需要标题' })
+    if (title.length > CONTENT_LIMITS.NOTE_TITLE) {
+      return reply.code(400).send({ error: `标题不能超过 ${CONTENT_LIMITS.NOTE_TITLE} 个字符` })
+    }
+    if (content !== undefined && typeof content !== 'string') {
+      return reply.code(400).send({ error: 'content 必须是字符串' })
+    }
+    if (typeof content === 'string' && content.length > CONTENT_LIMITS.NOTE_CONTENT) {
+      return reply.code(400).send({ error: `内容不能超过 ${CONTENT_LIMITS.NOTE_CONTENT} 个字符` })
+    }
+    if (typeof folder !== 'string') return reply.code(400).send({ error: 'folder 必须是字符串' })
 
     return withNoteLock('__create', async () => {
+      let safeFolder: string
+      try {
+        safeFolder = normalizeNoteFolder(folder)
+        await ensureNoteFolder(safeFolder)
+      } catch (e: any) {
+        return reply.code(400).send({ error: e.message })
+      }
       let pathName = titleToFilename(title)
-      let relPath = `${pathName}.md`
+      const inFolder = (name: string) => safeFolder ? `${safeFolder}/${name}` : name
+      let relPath = inFolder(`${pathName}.md`)
       let n = 2
       while (existsSync(noteAbsPath(relPath))) {
-        relPath = `${pathName}-${n}.md`
+        relPath = inFolder(`${pathName}-${n}.md`)
         n++
       }
 
@@ -206,9 +304,12 @@ export default async function noteRoutes(app: FastifyInstance) {
   // 更新内容（带 revision 冲突校验；读校验+写文件+同步索引 串行化，杜绝并发静默覆盖）
   app.put('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { content, revision } = req.body as { content?: string; revision?: number }
-    if (typeof content !== 'string' || typeof revision !== 'number') {
+    const { content, revision } = (req.body ?? {}) as { content?: string; revision?: number }
+    if (typeof content !== 'string' || !Number.isInteger(revision) || (revision as number) < 0) {
       return reply.code(400).send({ error: '需要 content 和 revision' })
+    }
+    if (content.length > CONTENT_LIMITS.NOTE_CONTENT) {
+      return reply.code(400).send({ error: `内容不能超过 ${CONTENT_LIMITS.NOTE_CONTENT} 个字符` })
     }
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
@@ -231,8 +332,13 @@ export default async function noteRoutes(app: FastifyInstance) {
   // 再取该笔记当前路径锁（与针对它的 PUT/DELETE 互斥）；锁内重新读取最新记录。
   app.patch('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { title } = req.body as { title?: string }
-    if (!title || !title.trim()) return reply.code(400).send({ error: '需要标题' })
+    const { title, folder } = (req.body ?? {}) as { title?: string; folder?: string }
+    if (title !== undefined && (typeof title !== 'string' || !title.trim())) return reply.code(400).send({ error: '标题不能为空' })
+    if (title !== undefined && title.length > CONTENT_LIMITS.NOTE_TITLE) {
+      return reply.code(400).send({ error: `标题不能超过 ${CONTENT_LIMITS.NOTE_TITLE} 个字符` })
+    }
+    if (folder !== undefined && typeof folder !== 'string') return reply.code(400).send({ error: 'folder 必须是字符串' })
+    if (title === undefined && folder === undefined) return reply.code(400).send({ error: '需要标题或文件夹' })
     const note = await prisma.note.findUnique({ where: { id } })
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
 
@@ -243,7 +349,7 @@ export default async function noteRoutes(app: FastifyInstance) {
         const cur = await prisma.note.findUnique({ where: { id } })
         if (!cur) return reply.code(404).send({ error: '笔记不存在' })
 
-        const newTitle = title.trim()
+        const newTitle = title?.trim() ?? cur.title
         const newKey = normalizeTitleKey(newTitle)
         const dup = await prisma.note.findMany({
           where: { titleKey: newKey, id: { not: id } },
@@ -251,19 +357,33 @@ export default async function noteRoutes(app: FastifyInstance) {
         })
         if (dup.length) return reply.code(409).send({ error: '存在同名笔记（标题唯一）' })
 
+        let targetFolder: string
+        try {
+          const currentFolder = posix.dirname(cur.path) === '.' ? '' : posix.dirname(cur.path)
+          targetFolder = folder === undefined ? currentFolder : normalizeNoteFolder(folder)
+          await ensureNoteFolder(targetFolder)
+        } catch (e: any) {
+          return reply.code(400).send({ error: e.message })
+        }
+
         const newBase = titleToFilename(newTitle)
-        const newPath = `${newBase}.md`
+        const newPath = targetFolder ? `${targetFolder}/${newBase}.md` : `${newBase}.md`
         if (newPath !== cur.path && existsSync(noteAbsPath(newPath))) {
           return reply.code(409).send({ error: '目标文件名已存在' })
         }
         if (newPath !== cur.path) {
           suspendWatcherPaths([cur.path, newPath], RENAME_SUSPEND_MS)
           await atomicWriteFile(noteAbsPath(newPath), await readNoteFile(cur.path))
-          await unlink(noteAbsPath(cur.path)).catch(() => {})
+          try {
+            await unlink(noteAbsPath(cur.path))
+          } catch (error) {
+            await unlink(noteAbsPath(newPath)).catch(() => {})
+            throw error
+          }
         }
-        await prisma.note.update({
+        const renamed = await prisma.note.update({
           where: { id },
-          data: { path: newPath, title: newTitle, titleKey: newKey },
+          data: { path: newPath, title: newTitle, titleKey: newKey, revision: { increment: 1 } },
         })
         await syncNoteFileLocked(newPath, 'api')
         // 改写其它笔记正文里指向旧标题的 [[旧标题]]/[[旧标题|别名]] 并重建索引。
@@ -273,7 +393,7 @@ export default async function noteRoutes(app: FastifyInstance) {
           ? await rewriteNoteTitleInOthers(renamedOwn, newTitle, newPath)
           : 0
         notesEmitter.emit('note.renamed', { id, path: newPath, rewritten })
-        return reply.send({ id, path: newPath, title: newTitle, rewritten })
+        return reply.send({ id, path: newPath, title: newTitle, revision: renamed.revision, rewritten })
       })
     })
   })
@@ -285,7 +405,14 @@ export default async function noteRoutes(app: FastifyInstance) {
     if (!note) return reply.code(404).send({ error: '笔记不存在' })
 
     return withNoteLock(note.path, async () => {
-      await unlink(noteAbsPath(note.path)).catch(() => {})
+      try {
+        await unlink(noteAbsPath(note.path))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          req.log.error(error, `删除笔记文件失败: ${note.path}`)
+          return reply.code(500).send({ error: '笔记文件删除失败，索引已保留' })
+        }
+      }
       await removeNoteLocked(note.path)
       return reply.send({ ok: true })
     })

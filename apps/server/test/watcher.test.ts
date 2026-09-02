@@ -1,12 +1,12 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { execSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Fastify from 'fastify'
 import websocket from '@fastify/websocket'
+import { pushTestSchema } from './test-db.js'
 
 // 必须先于任何 src 模块加载前设置环境，config/db 在 import 时读取
 const serverRoot = dirname(dirname(fileURLToPath(import.meta.url))) // apps/server
@@ -16,11 +16,7 @@ process.env.DATA_DIR = join(tmpRoot, 'data')
 process.env.NOTES_DIR = notesDir
 process.env.DATABASE_URL = `file:${join(tmpRoot, 'watch.db').replace(/\\/g, '/')}`
 
-execSync('node node_modules/prisma/build/index.js db push --skip-generate --schema src/schema.prisma', {
-  cwd: serverRoot,
-  env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
-  stdio: 'pipe',
-})
+pushTestSchema(serverRoot, process.env.DATABASE_URL)
 
 // 动态导入，确保上面的环境变量已生效
 const prisma = (await import('../src/db.js')).default
@@ -47,6 +43,15 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await sleep(100)
+  }
+  throw new Error('等待 watcher 状态超时')
+}
+
 before(async () => {
   // 启动真实 Chokidar 监听 NOTES_DIR，覆盖“watcher 事件先于 API 数据库更新”的顺序
   watcher = trackNotesDirectory()
@@ -65,6 +70,37 @@ test('暂停机制：suspendWatcherPaths 后 isWatcherPathSuspended 为真，到
   assert.ok(isWatcherPathSuspended('x.md'))
   await sleep(200)
   assert.ok(!isWatcherPathSuspended('x.md'))
+})
+
+test('真实 watcher：服务器直接编辑子目录 Markdown 时递归新增、更新并删除索引', async () => {
+  const folder = join(notesDir, '服务器编辑', '项目')
+  const file = join(folder, 'NestedWatch.md')
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(file, '# 第一版')
+
+  await waitUntil(async () => (await prisma.note.findUnique({ where: { path: '服务器编辑/项目/NestedWatch.md' } })) != null)
+  const created = await prisma.note.findUniqueOrThrow({ where: { path: '服务器编辑/项目/NestedWatch.md' } })
+  assert.equal(created.title, 'NestedWatch')
+
+  writeFileSync(file, '# 第二版')
+  await waitUntil(async () => {
+    const current = await prisma.note.findUnique({ where: { path: '服务器编辑/项目/NestedWatch.md' } })
+    return (current?.revision ?? 0) > created.revision
+  })
+
+  rmSync(file)
+  await waitUntil(async () => (await prisma.note.findUnique({ where: { path: '服务器编辑/项目/NestedWatch.md' } })) == null)
+})
+
+test('真实 watcher：仅忽略根 assets，嵌套 assets 目录仍可正常索引', async () => {
+  const folder = join(notesDir, '项目', 'assets')
+  const file = join(folder, 'NestedAssets.md')
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(file, '嵌套 assets 笔记')
+
+  await waitUntil(async () => (await prisma.note.findUnique({ where: { path: '项目/assets/NestedAssets.md' } })) != null)
+  rmSync(file)
+  await waitUntil(async () => (await prisma.note.findUnique({ where: { path: '项目/assets/NestedAssets.md' } })) == null)
 })
 
 test('真实 watcher：API 重命名期间不建重复索引、不误删旧索引，Note ID 保持不变', async () => {

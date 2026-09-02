@@ -59,13 +59,16 @@ try {
   {
     const t = mkdtempSync(join(tmpdir(), 'tt-cli-s1-')); const E = makeEnv(t, basePort)
     seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    mkdirSync(join(E.notes, '工作', '项目'), { recursive: true })
+    writeFileSync(join(E.notes, '工作', '项目', 'nested.md'), '# nested backup', 'utf8')
     const dest = join(t, 'backups', 'out')
     const r = await runCLI(['backup', '--dest', dest], E.envObj)
     report(r.code === 0, 'S1 备份命令退出码 0', r.stderr.trim() || r.stdout.split('\n').pop())
     const manifest = existsSync(join(dest, 'manifest.json')) ? JSON.parse(readFileSync(join(dest, 'manifest.json'), 'utf8')) : null
     report(!!manifest, 'S1 生成 manifest.json')
     report(manifest?.database?.files?.length >= 1 && existsSync(join(dest, 'tagtime.db')), 'S1 主库已备份')
-    report(manifest?.notes?.count === 1 && existsSync(join(dest, 'notes', 'a.md')), 'S1 notes 已备份')
+    report(manifest?.notes?.count === 2 && existsSync(join(dest, 'notes', 'a.md')), 'S1 notes 已备份')
+    report(existsSync(join(dest, 'notes', '工作', '项目', 'nested.md')), 'S1 子目录 notes 保留目录结构')
     report(manifest?.uploads?.count === 1 && existsSync(join(dest, 'uploads', 'pic.bin')), 'S1 uploads 已备份')
     report(manifest?.version === 1 && !!manifest?.createdAt, 'S1 manifest 含版本与时间戳')
     rmSync(t, { recursive: true, force: true })
@@ -75,10 +78,13 @@ try {
   {
     const t = mkdtempSync(join(tmpdir(), 'tt-cli-s2-')); const E = makeEnv(t, basePort + 1)
     seedData(join(E.notes, 'a.md'), join(E.uploads, 'pic.bin'))
+    mkdirSync(join(E.notes, '工作', '项目'), { recursive: true })
+    writeFileSync(join(E.notes, '工作', '项目', 'nested.md'), '# nested original', 'utf8')
     const dest = join(t, 'backups', 'out')
     await runCLI(['backup', '--dest', dest], E.envObj)
     // 改动目标：改 notes 内容、删除 upload，制造"目标已有数据"与"被污染"
     writeFileSync(join(E.notes, 'a.md'), '# modified', 'utf8')
+    writeFileSync(join(E.notes, '工作', '项目', 'nested.md'), '# nested modified', 'utf8')
     writeFileSync(join(E.notes, 'extra.md'), 'junk', 'utf8')
     rmSync(join(E.uploads, 'pic.bin'), { force: true })
     // 无 --force 应拒绝（覆盖保护）
@@ -88,6 +94,7 @@ try {
     const r = await runCLI(['restore', dest, '--force'], E.envObj)
     report(r.code === 0, 'S2 恢复命令退出码 0', r.stderr.trim() || r.stdout.split('\n').pop())
     report(readFileSync(join(E.notes, 'a.md'), 'utf8') === '# hello backup', 'S2 notes/one 恢复为备份原文')
+    report(readFileSync(join(E.notes, '工作', '项目', 'nested.md'), 'utf8') === '# nested original', 'S2 子目录 note 恢复且路径不变')
     report(!existsSync(join(E.notes, 'extra.md')), 'S2 多余的 extra.md 被移除')
     report(existsSync(join(E.uploads, 'pic.bin')), 'S2 uploads/pic 恢复')
     const preDirs = existsSync(join(E.data, 'backups')) ? readdirSync(join(E.data, 'backups')).filter((n) => n.startsWith('pre-restore-')) : []

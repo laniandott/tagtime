@@ -1,11 +1,11 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { execSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { normalizeTitleKey } from '../src/links.js'
+import { pushTestSchema } from './test-db.js'
 
 const serverRoot = dirname(dirname(fileURLToPath(import.meta.url))) // apps/server
 const tmpRoot = mkdtempSync(join(tmpdir(), 'tt-int-'))
@@ -15,11 +15,7 @@ process.env.NOTES_DIR = notesDir
 process.env.DATABASE_URL = `file:${join(tmpRoot, 'int.db').replace(/\\/g, '/')}`
 
 // 先往临时库 push 真实 schema（用 node 直接调 prisma CLI，避免 win 下 sh 脚本不可执行）
-execSync('node node_modules/prisma/build/index.js db push --skip-generate --schema src/schema.prisma', {
-  cwd: serverRoot,
-  env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
-  stdio: 'pipe',
-})
+pushTestSchema(serverRoot, process.env.DATABASE_URL)
 
 let notes: typeof import('../src/notes.js')
 let prisma: typeof import('../src/db.js').default
@@ -78,6 +74,22 @@ test('启动恢复：磁盘缺失的失效 Note 删除前，将其入链置 isRe
   assert.ok(linkAfter, '入链应保留')
   assert.equal(linkAfter.isResolved, false)
   assert.equal(linkAfter.targetNoteId, null)
+})
+
+test('启动恢复：停服期间移动笔记文件夹时迁移路径并保留 Note ID', async () => {
+  const oldFolder = join(notesDir, '旧目录')
+  const newFolder = join(notesDir, '新目录')
+  mkdirSync(oldFolder, { recursive: true })
+  writeFileSync(join(oldFolder, 'MovedFolder.md'), '# folder move')
+  await notes.syncNoteFile('旧目录/MovedFolder.md', 'test')
+  const before = await prisma.note.findUniqueOrThrow({ where: { path: '旧目录/MovedFolder.md' } })
+
+  renameSync(oldFolder, newFolder)
+  await notes.reconcileNotesOnStartup()
+
+  const after = await prisma.note.findUniqueOrThrow({ where: { path: '新目录/MovedFolder.md' } })
+  assert.equal(after.id, before.id)
+  assert.equal(await prisma.note.findUnique({ where: { path: '旧目录/MovedFolder.md' } }), null)
 })
 
 test('重命名：改写其它正文 [[旧标题]] 链接并重建为解析到新标题', async () => {

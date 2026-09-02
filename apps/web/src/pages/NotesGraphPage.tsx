@@ -35,6 +35,7 @@ export default function NotesGraphPage() {
   const [hover, setHover] = useState<GraphNode | null>(null)
   const viewGroupRef = useRef<SVGGElement>(null)
   const [view, setView] = useState({ x: 0, y: 0, k: 1 })
+  const loadSequence = useRef(0)
 
   const isLocal = Boolean(id)
 
@@ -50,21 +51,24 @@ export default function NotesGraphPage() {
   const resetView = () => setView({ x: 0, y: 0, k: 1 })
 
   const load = async () => {
+    const sequence = ++loadSequence.current
     setLoading(true)
     setError('')
     try {
       const d = id
         ? await api.notes.localGraph(id, depth)
         : await api.notes.globalGraph({ limit })
+      if (sequence !== loadSequence.current) return
       setData(d)
     } catch (e: any) {
+      if (sequence !== loadSequence.current) return
       setError(`加载关系图失败：${e.message}`)
       setData(null)
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }
-  useEffect(() => { load() }, [id, depth, limit])
+  useEffect(() => { void load() }, [id, depth, limit])
 
   const nodes = useMemo<SimNode[]>(() => {
     if (!data) return []

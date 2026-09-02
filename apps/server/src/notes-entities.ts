@@ -3,6 +3,12 @@ import prisma from './db.js'
 import { parseEntityLinks, type EntityLinkType } from './links.js'
 import { noteAbsPath } from './notes.js'
 
+function batches<T>(values: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let i = 0; i < values.length; i += size) result.push(values.slice(i, i + size))
+  return result
+}
+
 // 重建某笔记的 TagTime 实体关联（先删后插，按 type+entityKey 去重）
 export async function rebuildEntityLinksForNote(noteId: string): Promise<void> {
   const note = await prisma.note.findUnique({ where: { id: noteId } })
@@ -13,13 +19,16 @@ export async function rebuildEntityLinksForNote(noteId: string): Promise<void> {
   if (!links.length) return
 
   const seen = new Set<string>()
+  const data: { noteId: string; type: string; entityKey: string; linkText: string }[] = []
   for (const l of links) {
     const key = `${l.type}:${l.entityKey}`
     if (seen.has(key)) continue
     seen.add(key)
-    await prisma.noteEntityLink.create({
-      data: { noteId, type: l.type, entityKey: l.entityKey, linkText: l.linkText },
-    })
+    data.push({ noteId, type: l.type, entityKey: l.entityKey, linkText: l.linkText })
+  }
+  // SQLite 单条语句的绑定参数数量有限；长笔记的实体链接分批写入。
+  for (const batch of batches(data, 200)) {
+    await prisma.noteEntityLink.createMany({ data: batch })
   }
 }
 
@@ -48,28 +57,24 @@ export async function getRelatedEntities(
 ): Promise<{ tags: RelatedEntity[]; todos: RelatedEntity[]; memos: RelatedEntity[]; dates: RelatedEntity[] }> {
   const links = await prisma.noteEntityLink.findMany({ where: { noteId } })
 
-  const tagKeys = links.filter((l) => l.type === 'tag').map((l) => l.entityKey)
-  const todoKeys = links.filter((l) => l.type === 'todo').map((l) => l.entityKey)
-  const memoIds = links.filter((l) => l.type === 'memo').map((l) => l.entityKey)
+  const tagKeys = [...new Set(links.filter((l) => l.type === 'tag').map((l) => l.entityKey))]
+  const todoKeys = [...new Set(links.filter((l) => l.type === 'todo').map((l) => l.entityKey))]
+  const memoIds = [...new Set(links.filter((l) => l.type === 'memo').map((l) => l.entityKey))]
 
   const [tags, todos, memos] = await Promise.all([
-    tagKeys.length
-      ? prisma.tag.findMany({ where: { name: { in: tagKeys } } })
-      : Promise.resolve([]),
-    todoKeys.length
-      ? prisma.todo.findMany({ where: { title: { in: todoKeys } } })
-      : Promise.resolve([]),
-    memoIds.length
-      ? prisma.memo.findMany({
-          where: { id: { in: memoIds } },
-          include: {
-            tag: { select: { name: true } },
-            timeEntry: {
-              select: { id: true, startTime: true, endTime: true, tag: { select: { name: true } } },
-            },
-          },
-        })
-      : Promise.resolve([]),
+    Promise.all(batches(tagKeys, 500).map((batch) => prisma.tag.findMany({ where: { name: { in: batch } } })))
+      .then((parts) => parts.flat()),
+    Promise.all(batches(todoKeys, 500).map((batch) => prisma.todo.findMany({ where: { title: { in: batch } } })))
+      .then((parts) => parts.flat()),
+    Promise.all(batches(memoIds, 500).map((batch) => prisma.memo.findMany({
+      where: { id: { in: batch } },
+      include: {
+        tag: { select: { name: true } },
+        timeEntry: {
+          select: { id: true, startTime: true, endTime: true, tag: { select: { name: true } } },
+        },
+      },
+    }))).then((parts) => parts.flat()),
   ])
 
   const tagByName = new Map(tags.map((t) => [t.name, t]))

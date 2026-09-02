@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { api, getServerHost, setServerHost } from '../api'
+import { api, getServerHost, normalizeServerHost, setServerHost } from '../api'
 import type { Category, Tag, Goal } from '../types'
 
 const COLORS = ['#6d5efc', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#64748b']
@@ -13,9 +13,15 @@ export default function TagsPage() {
   const [editingTag, setEditingTag] = useState<Tag | null>(null)
   const [goals, setGoals] = useState<Goal[]>([])
   const [editingGoal, setEditingGoal] = useState<{ goal: Goal | null; tag: Tag } | null>(null)
+  const [error, setError] = useState('')
 
   const loadGoals = async () => {
-    try { setGoals(await api.goals.list()) } catch {}
+    try {
+      setGoals(await api.goals.list())
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载目标失败')
+    }
   }
   useEffect(() => { loadGoals() }, [tags])
 
@@ -24,6 +30,8 @@ export default function TagsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">标签与分类</h1>
       </div>
+
+      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">{error}</div>}
 
       {/* 分类管理 */}
       <section className="space-y-3">
@@ -60,8 +68,12 @@ export default function TagsPage() {
                 <button
                   onClick={async () => {
                     if (!confirm(`删除分类「${cat.name}」？标签不会被删除，只是变为未分类。`)) return
-                    await api.categories.remove(cat.id)
-                    loadAll()
+                    try {
+                      await api.categories.remove(cat.id)
+                      await loadAll()
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '删除分类失败')
+                    }
                   }}
                   className="text-sm text-gray-400 hover:text-red-500"
                 >
@@ -175,10 +187,14 @@ export default function TagsPage() {
                       编辑
                     </button>
                     <button
-                      onClick={async () => {
-                        if (!confirm(`删除目标「${goal.title}」？`)) return
-                        await api.goals.remove(goal.id)
-                        loadGoals()
+                  onClick={async () => {
+                    if (!confirm(`删除目标「${goal.title}」？`)) return
+                        try {
+                          await api.goals.remove(goal.id)
+                          await loadGoals()
+                        } catch (e) {
+                          setError(e instanceof Error ? e.message : '删除目标失败')
+                        }
                       }}
                       className="text-sm text-gray-400 hover:text-red-500"
                     >
@@ -233,15 +249,24 @@ function CategoryForm({ category, onClose, onSaved }: {
   const [name, setName] = useState(category?.name ?? '')
   const [color, setColor] = useState(category?.color ?? COLORS[0])
   const [icon, setIcon] = useState(category?.icon ?? '')
+  const [error, setError] = useState('')
 
   const save = async () => {
-    if (!name.trim()) return
-    if (category) {
-      await api.categories.update(category.id, { name, color, icon: icon || null })
-    } else {
-      await api.categories.create({ name, color, icon: icon || null })
+    if (!name.trim()) {
+      setError('名称不能为空')
+      return
     }
-    onSaved()
+    setError('')
+    try {
+      if (category) {
+        await api.categories.update(category.id, { name: name.trim(), color, icon: icon || null })
+      } else {
+        await api.categories.create({ name: name.trim(), color, icon: icon || null })
+      }
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存分类失败')
+    }
   }
 
   return (
@@ -259,6 +284,7 @@ function CategoryForm({ category, onClose, onSaved }: {
           <ColorPicker value={color} onChange={setColor} />
         </Field>
       </div>
+      {error && <div className="mt-4 text-sm text-red-500">{error}</div>}
       <FormActions onCancel={onClose} onSave={save} />
     </Modal>
   )
@@ -275,15 +301,24 @@ function TagForm({ tag, categories, onClose, onSaved }: {
   const [icon, setIcon] = useState(tag?.icon ?? '')
   const [categoryId, setCategoryId] = useState(tag?.categoryId ?? categories[0]?.id ?? '')
   const [trackType, setTrackType] = useState<'time' | 'count'>(tag?.trackType ?? 'time')
+  const [error, setError] = useState('')
 
   const save = async () => {
-    if (!name.trim()) return
-    if (tag) {
-      await api.tags.update(tag.id, { name, color, icon: icon || null, categoryId: categoryId || null, trackType })
-    } else {
-      await api.tags.create({ name, color, icon: icon || null, categoryId: categoryId || null, trackType })
+    if (!name.trim()) {
+      setError('名称不能为空')
+      return
     }
-    onSaved()
+    setError('')
+    try {
+      if (tag) {
+        await api.tags.update(tag.id, { name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType })
+      } else {
+        await api.tags.create({ name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType })
+      }
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存标签失败')
+    }
   }
 
   return (
@@ -324,6 +359,7 @@ function TagForm({ tag, categories, onClose, onSaved }: {
           <ColorPicker value={color} onChange={setColor} />
         </Field>
       </div>
+      {error && <div className="mt-4 text-sm text-red-500">{error}</div>}
       <FormActions onCancel={onClose} onSave={save} />
     </Modal>
   )
@@ -415,16 +451,33 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
   const [target, setTarget] = useState(goal?.target ?? 1)
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>(goal?.period ?? 'daily')
   const [periodDays, setPeriodDays] = useState(goal?.periodDays ?? 7)
+  const [error, setError] = useState('')
 
   const save = async () => {
-    if (!title.trim()) return
-    const data = { title: title.trim(), type, target, period, periodDays: period === 'custom' ? periodDays : null }
-    if (goal) {
-      await api.goals.update(goal.id, data)
-    } else {
-      await api.goals.create({ tagId: tag.id, ...data })
+    if (!title.trim()) {
+      setError('目标名称不能为空')
+      return
     }
-    onSaved()
+    if (!Number.isInteger(target) || target < 1) {
+      setError('目标值必须是大于 0 的整数')
+      return
+    }
+    if (period === 'custom' && (!Number.isInteger(periodDays) || periodDays < 1)) {
+      setError('自定义周期天数必须是大于 0 的整数')
+      return
+    }
+    const data = { title: title.trim(), type, target, period, periodDays: period === 'custom' ? periodDays : null }
+    setError('')
+    try {
+      if (goal) {
+        await api.goals.update(goal.id, data)
+      } else {
+        await api.goals.create({ tagId: tag.id, ...data })
+      }
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存目标失败')
+    }
   }
 
   return (
@@ -479,6 +532,7 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
           </Field>
         )}
       </div>
+      {error && <div className="mt-4 text-sm text-red-500">{error}</div>}
       <FormActions onCancel={onClose} onSave={save} />
     </Modal>
   )
@@ -495,23 +549,36 @@ function SystemSettingsSection() {
   const handleTestConnection = async () => {
     setTesting(true)
     setTestResult(null)
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 10_000)
     try {
-      const target = serverUrl.trim().replace(/\/$/, '')
-      const res = await fetch(`${target}/api/categories`)
+      const target = normalizeServerHost(serverUrl)
+      if (!target) {
+        setTestResult({ success: false, message: '服务器地址必须是 http:// 或 https:// 地址，且不能包含账号、查询参数或片段' })
+        return
+      }
+      const res = await fetch(`${target}/api/categories`, { signal: controller.signal })
       if (res.ok) {
         setTestResult({ success: true, message: '连接成功！服务器通信正常' })
       } else {
         setTestResult({ success: false, message: `连接异常 HTTP ${res.status}` })
       }
     } catch (e: any) {
-      setTestResult({ success: false, message: e.message || '网络无法连接，请检查服务器地址' })
+      setTestResult({
+        success: false,
+        message: e?.name === 'AbortError' ? '连接超时，请检查服务器地址' : (e.message || '网络无法连接，请检查服务器地址'),
+      })
     } finally {
+      window.clearTimeout(timeoutId)
       setTesting(false)
     }
   }
 
   const handleSaveServerUrl = () => {
-    setServerHost(serverUrl)
+    if (!setServerHost(serverUrl)) {
+      setTestResult({ success: false, message: '服务器地址无效，请填写 http:// 或 https:// 地址' })
+      return
+    }
     setTestResult({ success: true, message: '服务器地址设置已保存并生效！' })
     setTimeout(() => {
       window.location.reload()

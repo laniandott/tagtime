@@ -219,14 +219,19 @@ export default function CalendarPage() {
   const [dayDetailDate, setDayDetailDate] = useState<Date | null>(null) // 月视图点击日期弹窗
   const [now, setNow] = useState(new Date())
   const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarError, setCalendarError] = useState('')
   const [dayLinkedNotes, setDayLinkedNotes] = useState<LinkedNoteEntry[]>([])
+  const dayNotesRequest = useRef(0)
   const goNote = useNavigate()
 
   // 日视图回显关联笔记 [[date:YYYY-MM-DD]]
   useEffect(() => {
+    const sequence = ++dayNotesRequest.current
     if (view !== 'day') { setDayLinkedNotes([]); return }
     const iso = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
-    api.notes.linked('date', iso).then(setDayLinkedNotes).catch(() => setDayLinkedNotes([]))
+    api.notes.linked('date', iso)
+      .then((notes) => { if (sequence === dayNotesRequest.current) setDayLinkedNotes(notes) })
+      .catch(() => { if (sequence === dayNotesRequest.current) setDayLinkedNotes([]) })
   }, [view, currentDate])
 
   // 每分钟更新当前时间（用于"现在"指示线）
@@ -294,9 +299,14 @@ export default function CalendarPage() {
       api.memos.list(params),
     ]).then(([entryResult, externalResult, memoResult]) => {
       if (cancelled) return
-      setEntries(entryResult.status === 'fulfilled' ? entryResult.value : [])
-      setExternalEvents(externalResult.status === 'fulfilled' ? externalResult.value : [])
-      setMemos(memoResult.status === 'fulfilled' ? memoResult.value : [])
+      const failures: string[] = []
+      if (entryResult.status === 'fulfilled') setEntries(entryResult.value)
+      else failures.push('时间记录')
+      if (externalResult.status === 'fulfilled') setExternalEvents(externalResult.value)
+      else failures.push('外部日历')
+      if (memoResult.status === 'fulfilled') setMemos(memoResult.value)
+      else failures.push('记事')
+      setCalendarError(failures.length ? `${failures.join('、')}加载失败，请稍后重试` : '')
       setCalendarLoading(false)
     })
 
@@ -317,9 +327,17 @@ export default function CalendarPage() {
   // 按天分组条目（跨午夜的计时会出现在它跨越的每一天）
   const entriesByDay = useMemo(() => {
     const map = new Map<string, TimeEntry[]>()
+    const rangeStart = range.from.getTime()
+    const rangeEnd = range.to.getTime()
     for (const e of visibleEntries) {
-      const entryStart = startOfDay(new Date(e.startTime))
-      const entryEnd = e.endTime ? startOfDay(new Date(e.endTime)) : startOfDay(new Date())
+      const rawStart = new Date(e.startTime).getTime()
+      const rawEnd = e.endTime ? new Date(e.endTime).getTime() : Date.now()
+      if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd) || rawEnd < rangeStart || rawStart > rangeEnd) continue
+
+      // 只遍历当前视图范围内的日期。长时间运行的计时如果从数月前开始，
+      // 不应在月视图中把范围外的每一天都展开一次。
+      const entryStart = startOfDay(new Date(Math.max(rawStart, rangeStart)))
+      const entryEnd = startOfDay(new Date(Math.min(rawEnd, rangeEnd)))
       // 遍历计时跨越的每一天
       const cur = new Date(entryStart)
       while (cur <= entryEnd) {
@@ -330,7 +348,7 @@ export default function CalendarPage() {
       }
     }
     return map
-  }, [visibleEntries])
+  }, [visibleEntries, range.from, range.to])
 
   // 计算当日总时长（跨午夜计时只计算当天部分）
   const dayTotal = useCallback((day: Date): number => {
@@ -350,11 +368,14 @@ export default function CalendarPage() {
 
   // 当前周期总时长
   const periodTotal = useMemo(() => {
+    const rangeStart = range.from.getTime()
+    const rangeEnd = range.to.getTime()
     return visibleEntries.reduce((sum, e) => {
-      const end = e.endTime ? new Date(e.endTime).getTime() : Date.now()
-      return sum + (end - new Date(e.startTime).getTime())
+      const start = Math.max(new Date(e.startTime).getTime(), rangeStart)
+      const end = Math.min(e.endTime ? new Date(e.endTime).getTime() : Date.now(), rangeEnd)
+      return sum + Math.max(0, end - start)
     }, 0)
-  }, [visibleEntries, now])
+  }, [visibleEntries, range.from, range.to, now])
 
   const hasCalendarContent = visibleEntries.length > 0 || externalEvents.length > 0 || memos.length > 0
   const filterCount = selectedCategoryKeys?.size ?? allCategoryKeys.size
@@ -503,6 +524,7 @@ export default function CalendarPage() {
       </div>
 
       {/* 日历主体 */}
+      {calendarError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">{calendarError}</div>}
       {calendarLoading && !hasCalendarContent ? (
         <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-12 text-center text-gray-400">加载日历中...</div>
       ) : !hasCalendarContent ? (
@@ -550,11 +572,12 @@ export default function CalendarPage() {
           entry={selectedEntry}
           onClose={() => setSelectedEntry(null)}
           onChanged={async () => {
-            setSelectedEntry(null)
             const params = { from: range.from.toISOString(), to: range.to.toISOString() }
             const [nextEntries, nextMemos] = await Promise.all([api.timer.list(params), api.memos.list(params)])
             setEntries(nextEntries)
             setMemos(nextMemos)
+            setCalendarError('')
+            setSelectedEntry(null)
           }}
         />
       )}
@@ -571,13 +594,20 @@ export default function CalendarPage() {
           onClose={() => setQuickCreateDefaults(null)}
           onSaved={() => {
             setQuickCreateDefaults(null)
-            api.timer.list({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setEntries).catch(() => {})
+            api.timer.list({ from: range.from.toISOString(), to: range.to.toISOString() })
+              .then((nextEntries) => { setEntries(nextEntries); setCalendarError('') })
+              .catch((err) => setCalendarError(err instanceof Error ? err.message : '刷新时间记录失败'))
           }}
         />
       )}
 
       {/* 外部日历订阅管理弹窗 */}
-      {showSubManager && <SubscriptionManager onClose={() => { setShowSubManager(false); api.calendars.events({ from: range.from.toISOString(), to: range.to.toISOString() }).then(setExternalEvents).catch(() => {}) }} />}
+      {showSubManager && <SubscriptionManager onClose={() => {
+        setShowSubManager(false)
+        api.calendars.events({ from: range.from.toISOString(), to: range.to.toISOString() })
+          .then((nextEvents) => { setExternalEvents(nextEvents); setCalendarError('') })
+          .catch((err) => setCalendarError(err instanceof Error ? err.message : '刷新外部日历失败'))
+      }} />}
 
       {/* 月视图点击日期详情弹窗 */}
       {dayDetailDate && (

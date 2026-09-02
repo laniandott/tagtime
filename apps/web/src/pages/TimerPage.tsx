@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useStore, formatClock, formatDuration, toIsoSafe } from '../store'
 import { api, resolveUploadUrl } from '../api'
 import type { TimeEntry, Tag, Memo, LinkedNoteEntry } from '../types'
@@ -49,9 +49,12 @@ export default function TimerPage() {
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7days' | '30days' | 'custom'>('today')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
+  const [recentError, setRecentError] = useState('')
+  const loadRecentSequence = useRef(0)
 
   // 加载最近记录（按日期范围筛选）
   const loadRecent = async () => {
+    const sequence = ++loadRecentSequence.current
     let from: string | undefined
     let to: string | undefined
     const now = new Date()
@@ -79,12 +82,20 @@ export default function TimerPage() {
       if (customTo) to = new Date(customTo + 'T23:59:59').toISOString()
     }
 
-    const list = await api.timer.list({ from, to }).catch(() => [])
-    setRecent(list)
+    try {
+      const list = await api.timer.list({ from, to })
+      if (sequence !== loadRecentSequence.current) return
+      setRecent(list)
+      setRecentError('')
+    } catch (e) {
+      if (sequence !== loadRecentSequence.current) return
+      // 保留当前时间线，避免临时网络错误被误显示成“暂无记录”。
+      setRecentError(e instanceof Error ? e.message : '加载活动记录失败')
+    }
   }
 
   useEffect(() => {
-    loadRecent()
+    void loadRecent()
   }, [running.length, dateRange, customFrom, customTo])
 
   const handleStart = async (tagId: string) => {
@@ -127,8 +138,12 @@ export default function TimerPage() {
 
   const handleDelete = async (id: string) => {
     if (confirm('确定要删除这条时间记录吗？')) {
-      await api.timer.remove(id)
-      await loadRecent()
+      try {
+        await api.timer.remove(id)
+        await loadRecent()
+      } catch (e) {
+        alert(e instanceof Error ? e.message : '删除时间记录失败')
+      }
     }
   }
 
@@ -285,6 +300,7 @@ export default function TimerPage() {
 
       {/* 最近记录时间线 */}
       <div>
+        {recentError && <div className="mb-3 text-xs text-red-500">{recentError}</div>}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1.5">
@@ -1501,10 +1517,15 @@ export function MemoEditModal({
   )
   const [error, setError] = useState('')
   const [linkedNotes, setLinkedNotes] = useState<LinkedNoteEntry[]>([])
+  const linkedNotesRequest = useRef(0)
 
   // 反查：挂靠到本日记 [[memo:<id>]] 的笔记
   useEffect(() => {
-    api.notes.linked('memo', memo.id).then(setLinkedNotes).catch(() => setLinkedNotes([]))
+    const sequence = ++linkedNotesRequest.current
+    setLinkedNotes([])
+    api.notes.linked('memo', memo.id)
+      .then((notes) => { if (sequence === linkedNotesRequest.current) setLinkedNotes(notes) })
+      .catch(() => { if (sequence === linkedNotesRequest.current) setLinkedNotes([]) })
   }, [memo.id])
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

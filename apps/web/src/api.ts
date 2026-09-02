@@ -21,9 +21,18 @@ import type {
 
 export function getServerHost(): string {
   if (typeof localStorage !== 'undefined') {
-    const custom = localStorage.getItem('tagtime_server_url')
-    if (custom) return custom.replace(/\/$/, '')
+    try {
+      const custom = localStorage.getItem('tagtime_server_url')
+      const normalized = normalizeServerHost(custom)
+      if (normalized) return normalized
+    } catch {
+      // 某些隐私模式/受限 WebView 会让 localStorage 读取抛异常，
+      // 此时回退到构建配置或当前页面地址，不应让整个 API 层白屏。
+    }
   }
+  const configured = import.meta.env?.VITE_API_URL
+  const normalizedConfigured = normalizeServerHost(configured)
+  if (normalizedConfigured) return normalizedConfigured
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol
 
@@ -39,24 +48,59 @@ export function getServerHost(): string {
   return ''
 }
 
+/**
+ * 服务器地址只接受 HTTP(S) origin/base URL。
+ * 这样可以避免错误配置把请求或附件地址拼成 javascript:、file: 等危险协议，
+ * 同时把旧配置中的尾部斜杠统一掉。
+ */
+export function normalizeServerHost(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) return ''
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return ''
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return ''
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return ''
+  }
+}
+
 export function resolveUploadUrl(path?: string | null): string {
   if (!path) return ''
-  if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:')) {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    try {
+      const parsed = new URL(path)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
+    } catch {
+      return ''
+    }
+  }
+  if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);/i.test(path)) {
     return path
   }
+  if (path.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(path)) return ''
   const host = getServerHost()
   const cleanPath = path.startsWith('/') ? path : `/${path}`
   return `${host}${cleanPath}`
 }
 
-export function setServerHost(url: string) {
+export function setServerHost(url: string): boolean {
+  const normalized = normalizeServerHost(url)
+  if (url.trim() && !normalized) return false
   if (typeof localStorage !== 'undefined') {
-    if (url.trim()) {
-      localStorage.setItem('tagtime_server_url', url.trim().replace(/\/$/, ''))
-    } else {
-      localStorage.removeItem('tagtime_server_url')
+    try {
+      if (normalized) {
+        localStorage.setItem('tagtime_server_url', normalized)
+      } else {
+        localStorage.removeItem('tagtime_server_url')
+      }
+    } catch {
+      // 受限 WebView 下无法持久化配置，但不应阻断当前会话。
     }
   }
+  return true
 }
 
 export class ApiError extends Error {
@@ -69,22 +113,102 @@ export class ApiError extends Error {
   }
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
-  const host = getServerHost()
-  const headers: Record<string, string> = {}
-  if (opts?.body) headers['Content-Type'] = 'application/json'
-  const url = `${host}/api${path}`
-  const res = await fetch(url, {
-    ...opts,
-    headers: { ...headers, ...(opts?.headers as Record<string, string> | undefined) },
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new ApiError(err.error ?? '请求失败', res.status, err)
-  }
-  const text = await res.text()
-  return (text ? JSON.parse(text) : null) as T
+type RequestOptions = RequestInit & {
+  timeout?: number
+  retryDelayMs?: number
 }
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+const DEFAULT_RETRY_DELAY_MS = 1_000
+
+function configuredTimeout(): number {
+  const value = Number(import.meta.env?.VITE_API_TIMEOUT_MS)
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_REQUEST_TIMEOUT_MS
+}
+
+function isRetryableError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return false
+  if (error instanceof ApiError) {
+    return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600)
+  }
+  if (error instanceof DOMException) return error.name === 'AbortError' || error.name === 'NetworkError'
+  if (error instanceof Error) return error.name === 'AbortError' || /network|fetch/i.test(error.message)
+  return false
+}
+
+async function requestOnce<T>(path: string, opts?: RequestOptions): Promise<T> {
+  const host = getServerHost()
+  const { timeout = configuredTimeout(), retryDelayMs: _retryDelayMs, ...fetchOptions } = opts ?? {}
+  const headers = new Headers(fetchOptions.headers)
+  if (typeof fetchOptions.body === 'string' && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  const url = `${host}/api${path}`
+
+  const controller = new AbortController()
+  const originalSignal = fetchOptions.signal
+  const onAbort = () => controller.abort(originalSignal?.reason)
+  if (originalSignal) {
+    if (originalSignal.aborted) controller.abort(originalSignal.reason)
+    else originalSignal.addEventListener('abort', onAbort, { once: true })
+  }
+
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  try {
+    const res = await fetch(url, {
+      ...fetchOptions,
+      headers,
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new ApiError(err.error ?? '请求失败', res.status, err)
+    }
+    const text = await res.text()
+    return (text ? JSON.parse(text) : null) as T
+  } finally {
+    clearTimeout(timeoutId)
+    originalSignal?.removeEventListener('abort', onAbort)
+  }
+}
+
+export async function reqWithRetry<T>(path: string, opts?: RequestOptions): Promise<T> {
+  const method = (opts?.method ?? 'GET').toUpperCase()
+  const maxRetries = method === 'GET' ? 2 : 0
+  const retryDelayMs = opts?.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await requestOnce<T>(path, opts)
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries
+      if (isLastAttempt || !isRetryableError(error, opts?.signal ?? undefined)) throw error
+      await new Promise<void>((resolve, reject) => {
+        const signal = opts?.signal
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const onAbort = () => {
+          if (timer !== undefined) clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          reject(signal?.reason ?? new DOMException('请求已取消', 'AbortError'))
+        }
+        const onDelayDone = () => {
+          if (timer !== undefined) clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        }
+        timer = setTimeout(onDelayDone, retryDelayMs * 2 ** attempt)
+        if (signal) {
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }
+      })
+    }
+  }
+  throw new Error('请求重试失败')
+}
+
+// 保持现有 API 方法调用兼容，同时让所有请求经过超时与安全重试逻辑。
+export const req = reqWithRetry
 
 // 分类
 export const api = {
@@ -142,8 +266,10 @@ export const api = {
     remove: (id: string) => req(`/todos/${id}`, { method: 'DELETE' }),
   },
   stats: {
-    summary: (categoryId?: string) =>
-      req<Summary>(`/stats/summary${categoryId ? `?categoryId=${categoryId}` : ''}`),
+    summary: (categoryId?: string) => {
+      const qs = categoryId ? `?${new URLSearchParams({ categoryId }).toString()}` : ''
+      return req<Summary>(`/stats/summary${qs}`)
+    },
     daily: (params: { days?: number; from?: string; to?: string; categoryId?: string } = {}) => {
       const q = new URLSearchParams()
       if (params.days) q.set('days', String(params.days))
@@ -198,17 +324,25 @@ export const api = {
       const host = getServerHost()
       const form = new FormData()
       form.append('file', file, file.name || 'upload.bin')
-      const request = (url: string) => fetch(url, { method: 'POST', body: form })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60_000)
+      const request = (url: string) => fetch(url, {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      })
       let res: Response
       try {
         res = await request(`${host}/api/memos/upload`)
       } catch (firstError) {
         // HTTPS pages cannot call a stale HTTP server URL; retry through same origin.
-        if (typeof window !== 'undefined' && window.location.protocol === 'https:' && host) {
+        if (!controller.signal.aborted && typeof window !== 'undefined' && window.location.protocol === 'https:' && host) {
           res = await request('/api/memos/upload')
         } else {
           throw firstError
         }
+      } finally {
+        clearTimeout(timeoutId)
       }
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }))
@@ -243,7 +377,7 @@ export const api = {
       return req<NoteListEntry[]>(`/notes${qs}`)
     },
     get: (id: string) => req<NoteDetail>(`/notes/${id}`),
-    create: (data: { title: string; content?: string }) =>
+    create: (data: { title: string; content?: string; folder?: string }) =>
       req<{ id: string; path: string; revision: number }>('/notes', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -253,11 +387,16 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    rename: (id: string, data: { title: string }) =>
-      req<{ id: string; path: string; title: string }>(`/notes/${id}`, {
+    rename: (id: string, data: { title?: string; folder?: string }) =>
+      req<{ id: string; path: string; title: string; revision: number }>(`/notes/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),
+    folders: () => req<{ folders: string[] }>('/notes/folders'),
+    createFolder: (path: string) =>
+      req<{ path: string }>('/notes/folders', { method: 'POST', body: JSON.stringify({ path }) }),
+    removeFolder: (path: string) =>
+      req<{ ok: boolean }>(`/notes/folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
     remove: (id: string) => req<{ ok: boolean }>(`/notes/${id}`, { method: 'DELETE' }),
     autocomplete: (q: string) => {
       const qs = q ? `?q=${encodeURIComponent(q)}` : ''

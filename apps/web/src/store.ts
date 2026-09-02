@@ -20,6 +20,8 @@ interface AppState {
 }
 
 let notificationListenerRegistered = false
+let loadAllRequestSequence = 0
+let runningRequestSequence = 0
 
 // 安卓原生通知栏同步（仅在 Capacitor 原生 App 环境下按需动态加载并执行）
 async function syncNativeNotification(running: TimeEntry[]) {
@@ -87,31 +89,50 @@ export const useStore = create<AppState>((set, get) => ({
   loading: false,
 
   loadAll: async () => {
+    const requestSequence = ++loadAllRequestSequence
+    const runningSequenceAtStart = runningRequestSequence
     set({ loading: true })
     try {
-      const [categories, tags, timerData] = await Promise.all([
-        api.categories.list().catch(() => []),
-        api.tags.list().catch(() => []),
-        api.timer.current().catch(() => ({ running: [], serverTime: new Date().toISOString() })),
+      const [categoriesResult, tagsResult, timerResult] = await Promise.allSettled([
+        api.categories.list(),
+        api.tags.list(),
+        api.timer.current(),
       ])
-      const categoriesList = Array.isArray(categories) ? categories : []
-      const tagsList = Array.isArray(tags) ? tags : []
-      const runningList = Array.isArray(timerData?.running) ? timerData.running : []
-      const clockOffset = timerData?.serverTime ? Date.now() - new Date(timerData.serverTime).getTime() : 0
+      // 仅取消更早的 loadAll；loadRunning 的刷新不应让全局 loading 永久卡住。
+      if (requestSequence !== loadAllRequestSequence) return
+
+      const current = get()
+      const categoriesList = categoriesResult.status === 'fulfilled' && Array.isArray(categoriesResult.value)
+        ? categoriesResult.value
+        : current.categories
+      const tagsList = tagsResult.status === 'fulfilled' && Array.isArray(tagsResult.value)
+        ? tagsResult.value
+        : current.tags
+      const timerData = timerResult.status === 'fulfilled' ? timerResult.value : null
+      // 若期间已有更晚的 loadRunning，保留它的结果，避免旧的 loadAll 覆盖新计时状态。
+      const runningList = runningSequenceAtStart === runningRequestSequence && timerData && Array.isArray(timerData.running)
+        ? timerData.running
+        : current.running
+      const serverMs = timerData?.serverTime ? new Date(timerData.serverTime).getTime() : NaN
+      const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
 
       set({ categories: categoriesList, tags: tagsList, running: runningList, clockOffset, loading: false })
       syncNativeNotification(runningList)
     } catch (e) {
       console.error('loadAll error:', e)
-      set({ loading: false })
+      if (requestSequence === loadAllRequestSequence) set({ loading: false })
     }
   },
 
   loadRunning: async () => {
+    const requestSequence = ++runningRequestSequence
     try {
-      const timerData = await api.timer.current().catch(() => ({ running: [], serverTime: new Date().toISOString() }))
-      const runningList = Array.isArray(timerData?.running) ? timerData.running : []
-      const clockOffset = timerData?.serverTime ? Date.now() - new Date(timerData.serverTime).getTime() : 0
+      const timerData = await api.timer.current()
+      if (requestSequence !== runningRequestSequence) return
+      const current = get()
+      const runningList = Array.isArray(timerData?.running) ? timerData.running : current.running
+      const serverMs = timerData?.serverTime ? new Date(timerData.serverTime).getTime() : NaN
+      const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
       set({ running: runningList, clockOffset })
       syncNativeNotification(runningList)
     } catch (e) {

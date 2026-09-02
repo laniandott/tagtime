@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api'
 import type { CalendarSubscription } from '../types'
 
@@ -13,13 +13,24 @@ export function SubscriptionManager({ onClose }: { onClose: () => void }) {
   const [newUrl, setNewUrl] = useState('')
   const [newColor, setNewColor] = useState(PRESET_COLORS[0])
   const [error, setError] = useState('')
+  const loadSequence = useRef(0)
 
   const loadSubs = useCallback(async () => {
+    const sequence = ++loadSequence.current
     setLoading(true)
     try {
-      setSubs(await api.calendars.subscriptions.list())
-    } catch { setSubs([]) }
-    finally { setLoading(false) }
+      const result = await api.calendars.subscriptions.list()
+      if (sequence !== loadSequence.current) return
+      setSubs(result)
+      setError('')
+    } catch (err) {
+      if (sequence !== loadSequence.current) return
+      // 保留旧列表，避免临时网络错误被误显示成“暂无订阅”。
+      setError(err instanceof Error ? err.message : '加载订阅失败')
+    }
+    finally {
+      if (sequence === loadSequence.current) setLoading(false)
+    }
   }, [])
 
   useEffect(() => { loadSubs() }, [loadSubs])
@@ -36,17 +47,25 @@ export function SubscriptionManager({ onClose }: { onClose: () => void }) {
 
   const syncSub = async (id: string) => {
     setSyncing(id)
+    setError('')
     try {
       await api.calendars.subscriptions.sync(id)
-      loadSubs()
-    } catch { /* ignore */ }
+      await loadSubs()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '同步订阅失败')
+    }
     finally { setSyncing(null) }
   }
 
   const deleteSub = async (id: string, name: string) => {
     if (!confirm(`确定删除订阅「${name}」？`)) return
-    await api.calendars.subscriptions.remove(id)
-    loadSubs()
+    setError('')
+    try {
+      await api.calendars.subscriptions.remove(id)
+      await loadSubs()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除订阅失败')
+    }
   }
 
   const formatTimeAgo = (dateStr: string | null) => {
@@ -68,6 +87,8 @@ export function SubscriptionManager({ onClose }: { onClose: () => void }) {
           <h3 className="text-lg font-bold">📡 日历订阅</h3>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">✕</button>
         </div>
+
+        {error && <div className="mb-3 text-xs text-red-500">{error}</div>}
 
         {/* 已有订阅列表 */}
         <div className="flex-1 overflow-y-auto space-y-2 mb-4">
@@ -137,7 +158,6 @@ export function SubscriptionManager({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
             </div>
-            {error && <div className="text-xs text-red-500">{error}</div>}
             <div className="flex justify-end gap-2">
               <button onClick={() => { setShowAdd(false); setError('') }} className="px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">取消</button>
               <button onClick={addSub} className="px-4 py-1.5 rounded-lg text-sm bg-brand text-white hover:bg-brand-600 font-medium">保存</button>

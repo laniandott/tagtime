@@ -8,9 +8,9 @@ COPY package.json package-lock.json* ./
 COPY apps/server/package.json ./apps/server/
 COPY apps/web/package.json ./apps/web/
 
-# 安装依赖（--ignore-scripts 跳过 Prisma 的联网 postinstall）
+# 按锁文件安装依赖（--ignore-scripts 跳过 Prisma 的联网 postinstall）
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm install --no-audit --no-fund --ignore-scripts
+    npm ci --no-audit --no-fund --ignore-scripts
 
 # 复制源码
 COPY . .
@@ -45,6 +45,9 @@ ENV PORT=3000
 
 VOLUME ["/data"]
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "const http=require('http');const req=http.get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1))"
 
 # 启动：首次运行自动创建/更新数据库表（失败时保留日志便于排查），然后启动服务
 CMD ["sh", "-c", "cd apps/server && npx prisma db push --skip-generate; cd /app && node apps/server/dist/index.js"]

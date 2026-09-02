@@ -6,20 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --import tsx --test test/markdownTokens.test.ts test/formula.test.ts test/livePreview.test.ts test/api.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
     "@capacitor/core": "^8.5.0",
     "@capacitor/local-notifications": "^8.2.1",
     "@capacitor/status-bar": "^8.0.3",
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.2",
+    "@codemirror/view": "^6.43.10",
     "d3-force": "^3.0.0",
     "dompurify": "^3.4.14",
+    "katex": "^0.18.5",
     "lunar-javascript": "^1.7.7",
     "marked": "^18.0.11",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
+    "react-router-dom": "^7.18.3",
     "recharts": "^2.13.3",
     "zustand": "^5.0.2"
   },

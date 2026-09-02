@@ -1,15 +1,16 @@
-import React, { useEffect } from 'react'
+import React, { lazy, Suspense, useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import TimerPage from './pages/TimerPage'
-import TodosPage from './pages/TodosPage'
-import StatsPage from './pages/StatsPage'
-import TagsPage from './pages/TagsPage'
-import CalendarPage from './pages/CalendarPage'
-import NotesPage from './pages/NotesPage'
-import NoteEditorPage from './pages/NoteEditorPage'
-import NotesGraphPage from './pages/NotesGraphPage'
 import { useStore } from './store'
+
+const TimerPage = lazy(() => import('./pages/TimerPage'))
+const TodosPage = lazy(() => import('./pages/TodosPage'))
+const StatsPage = lazy(() => import('./pages/StatsPage'))
+const TagsPage = lazy(() => import('./pages/TagsPage'))
+const CalendarPage = lazy(() => import('./pages/CalendarPage'))
+const NotesPage = lazy(() => import('./pages/NotesPage'))
+const NoteEditorPage = lazy(() => import('./pages/NoteEditorPage'))
+const NotesGraphPage = lazy(() => import('./pages/NotesGraphPage'))
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
   constructor(props: any) {
@@ -52,6 +53,14 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 }
 
+function PageFallback() {
+  return (
+    <div className="min-h-[50vh] flex items-center justify-center" role="status" aria-label="页面加载中">
+      <div className="h-7 w-7 rounded-full border-2 border-gray-200 border-t-brand animate-spin" />
+    </div>
+  )
+}
+
 export default function App() {
   const loadAll = useStore((s) => s.loadAll)
 
@@ -62,17 +71,19 @@ export default function App() {
   return (
     <ErrorBoundary>
       <Layout>
-        <Routes>
-          <Route path="/" element={<TimerPage />} />
-          <Route path="/todos" element={<TodosPage />} />
-          <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/stats" element={<StatsPage />} />
-          <Route path="/tags" element={<TagsPage />} />
-          <Route path="/notes" element={<NotesPage />} />
-          <Route path="/notes/graph" element={<NotesGraphPage />} />
-          <Route path="/notes/:id" element={<NoteEditorPage />} />
-          <Route path="/notes/:id/graph" element={<NotesGraphPage />} />
-        </Routes>
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<TimerPage />} />
+            <Route path="/todos" element={<TodosPage />} />
+            <Route path="/calendar" element={<CalendarPage />} />
+            <Route path="/stats" element={<StatsPage />} />
+            <Route path="/tags" element={<TagsPage />} />
+            <Route path="/notes" element={<NotesPage />} />
+            <Route path="/notes/graph" element={<NotesGraphPage />} />
+            <Route path="/notes/:id" element={<NoteEditorPage />} />
+            <Route path="/notes/:id/graph" element={<NotesGraphPage />} />
+          </Routes>
+        </Suspense>
       </Layout>
     </ErrorBoundary>
   )

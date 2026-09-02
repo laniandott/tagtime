@@ -10,8 +10,11 @@ os.chdir(base_dir)
 env = os.environ.copy()
 env["PORT"] = "3000"
 env["HOST"] = "::"
-env["DATABASE_URL"] = "file:./data/tagtime.db"
-env["DATA_DIR"] = "./data"
+data_dir = os.path.join(base_dir, "data")
+db_file = os.path.join(data_dir, "tagtime.db").replace(os.sep, "/")
+env["DATABASE_URL"] = f"file:{db_file}"
+env["DATA_DIR"] = data_dir
+env["NOTES_DIR"] = os.path.join(data_dir, "notes")
 env["PYTHONIOENCODING"] = "utf-8"
 
 # 找到 node.exe 路径

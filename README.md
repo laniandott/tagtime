@@ -31,6 +31,14 @@ docker compose up -d --build
 
 数据持久化在 `./data/tagtime.db`，上传附件存储在 `./data/uploads/`。
 
+如需让其它域名托管的前端跨域访问 API，请在 `.env` 中显式配置允许的来源，例如：
+
+```bash
+CORS_ORIGINS=https://tagtime.example.com
+```
+
+多个来源使用英文逗号分隔。默认仅允许同源请求和本机 App/WebView 来源。
+
 ## 本地开发
 
 ```bash

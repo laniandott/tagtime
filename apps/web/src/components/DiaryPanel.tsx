@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, resolveUploadUrl } from '../api'
@@ -9,7 +9,8 @@ import { MemoEditModal } from '../pages/TimerPage'
 
 type DaysRange = 0 | 1 | 7 | 30
 
-export default function DiaryPanel({ compact = false, onActivate }: { compact?: boolean; onActivate?: () => void }) {
+export default function DiaryPanel() {
+  const { categories } = useStore()
   const [days, setDays] = useState<DaysRange>(0)
   const [memos, setMemos] = useState<Memo[]>([])
   const [loading, setLoading] = useState(false)
@@ -17,17 +18,25 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
   const [editingMemo, setEditingMemo] = useState<Memo | null>(null)
   const [showNewJournalModal, setShowNewJournalModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [filterCat, setFilterCat] = useState('')
+  const [error, setError] = useState('')
+  const loadSequence = useRef(0)
   const navigate = useNavigate()
 
   const loadMemos = useCallback(async () => {
+    const sequence = ++loadSequence.current
     setLoading(true)
     try {
       const data = await api.memos.list(days > 0 ? { days } : {})
+      if (sequence !== loadSequence.current) return
       setMemos(data)
-    } catch {
-      setMemos([])
+      setError('')
+    } catch (err) {
+      if (sequence !== loadSequence.current) return
+      // 网络抖动时保留当前列表，避免一次失败把已有日记误清空。
+      setError(err instanceof Error ? err.message : '加载日记失败')
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }, [days])
 
@@ -36,45 +45,26 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
   }, [loadMemos])
 
   const filteredMemos = useMemo(() => {
-    const diaryOnlyMemos = memos.filter((m) => m.type !== 'point')
-    if (!searchQuery) return diaryOnlyMemos
+    const diaryOnlyMemos = memos
+      .filter((m) => m.type !== 'point')
+      .filter((memo) => {
+        if (!filterCat) return true
+        const categoryId = memo.tag?.categoryId ?? memo.timeEntry?.tag?.categoryId
+        return filterCat === 'none' ? !categoryId : categoryId === filterCat
+      })
+    if (!searchQuery.trim()) return diaryOnlyMemos
     const query = searchQuery.toLowerCase()
     return diaryOnlyMemos.filter((memo) => {
       const content = memo.content?.toLowerCase() ?? ''
       const tagName = (memo.tag?.name ?? memo.timeEntry?.tag?.name ?? '').toLowerCase()
       return content.includes(query) || tagName.includes(query)
     })
-  }, [memos, searchQuery])
+  }, [memos, searchQuery, filterCat])
 
   return (
-    <section
-      className={`diary-panel space-y-4 ${compact ? 'diary-panel--compact' : ''}`}
-      onClick={onActivate}
-      aria-label="日记面板"
-    >
-      <div className="diary-panel__scale">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3 min-w-0">
-            <h2 className="text-base font-bold flex items-center gap-2 whitespace-nowrap">
-              <span>📖 日记</span>
-            </h2>
-            <button
-              onClick={() => setShowNewJournalModal(true)}
-              className="px-3 py-1 rounded-lg bg-brand text-white text-xs font-medium hover:bg-brand-600 transition-colors flex items-center gap-1 shadow-xs whitespace-nowrap"
-            >
-              <span>✍️ 写日记</span>
-            </button>
-            <div className="relative min-w-0">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="搜索日记…"
-                className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 w-32 focus:w-44 transition-all focus:outline-none focus:border-brand"
-              />
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
-            </div>
-          </div>
+    <section className="diary-panel space-y-4" aria-label="日记面板">
+      <div>
+        <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 text-xs font-medium">
             {([0, 1, 7, 30] as const).map((range) => (
               <button
@@ -90,7 +80,45 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
               </button>
             ))}
           </div>
+
+          <select
+            value={filterCat}
+            onChange={(event) => setFilterCat(event.target.value)}
+            className="text-xs border border-gray-200 dark:border-gray-800 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-500"
+            aria-label="按分类筛选日记"
+          >
+            <option value="">全部分类</option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>{category.name}</option>
+            ))}
+            <option value="none">未分类</option>
+          </select>
+
+          <div className="relative flex-1 min-w-[180px]">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="搜索日记…"
+              className="input pl-8 py-1.5 text-xs"
+            />
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
+          </div>
+
+          <button
+            onClick={() => setShowNewJournalModal(true)}
+            className="px-3 py-1.5 rounded-lg bg-brand text-white text-xs font-medium hover:bg-brand-600 transition-colors flex items-center gap-1 shadow-xs whitespace-nowrap"
+          >
+            <span>✍️ 写日记</span>
+          </button>
         </div>
+
+        {error && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError('')} className="hover:underline">关闭</button>
+          </div>
+        )}
 
         {loading ? (
           <div className="text-center py-8 text-gray-400 text-sm">加载日记...</div>
@@ -153,8 +181,12 @@ export default function DiaryPanel({ compact = false, onActivate }: { compact?: 
                         <button
                           onClick={async () => {
                             if (!confirm('确定要删除这条日记吗？')) return
-                            await api.memos.remove(memo.id)
-                            loadMemos()
+                            try {
+                              await api.memos.remove(memo.id)
+                              await loadMemos()
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : '删除日记失败')
+                            }
                           }}
                           className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                         >

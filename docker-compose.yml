@@ -15,4 +15,5 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
       - TZ=Asia/Shanghai
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
       - PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1

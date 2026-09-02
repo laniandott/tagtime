@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore, formatDuration } from '../store'
 import type { Summary, DailyStat, TagStat, Goal } from '../types'
@@ -20,31 +20,75 @@ export default function StatsPage() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [filterCat, setFilterCat] = useState('')
+  const summaryRequest = useRef(0)
+  const trendRequest = useRef(0)
+  const [summaryError, setSummaryError] = useState('')
+  const [trendError, setTrendError] = useState('')
 
   // 加载目标进度
   useEffect(() => {
-    api.goals.list().then(setGoals).catch(() => {})
+    api.goals.list().then(setGoals).catch(() => setGoals([]))
+  }, [])
+
+  useEffect(() => {
+    const sequence = ++summaryRequest.current
+    setSummaryError('')
+    api.stats.summary(filterCat || undefined)
+      .then((result) => {
+        if (sequence === summaryRequest.current) setSummary(result)
+      })
+      .catch((err) => {
+        if (sequence === summaryRequest.current) {
+          setSummaryError(err instanceof Error ? err.message : '概览加载失败')
+        }
+      })
   }, [filterCat])
 
   useEffect(() => {
-    api.stats.summary(filterCat || undefined).then(setSummary).catch(() => {})
-  }, [filterCat])
-
-  useEffect(() => {
+    const sequence = ++trendRequest.current
+    setTrendError('')
     if (range === 'custom') {
       // 自定义区间：需要同时有起止日期才查询
-      if (!customFrom || !customTo) return
+      if (!customFrom || !customTo) {
+        setDaily([])
+        setByTag([])
+        return
+      }
       const fromIso = new Date(customFrom + 'T00:00:00').toISOString()
       const toIso = new Date(customTo + 'T23:59:59').toISOString()
-      api.stats.daily({ from: fromIso, to: toIso, categoryId: filterCat || undefined }).then(setDaily).catch(() => {})
-      api.stats.byTag(fromIso, toIso, filterCat || undefined).then(setByTag).catch(() => {})
+      Promise.all([
+        api.stats.daily({ from: fromIso, to: toIso, categoryId: filterCat || undefined }),
+        api.stats.byTag(fromIso, toIso, filterCat || undefined),
+      ])
+        .then(([nextDaily, nextByTag]) => {
+          if (sequence !== trendRequest.current) return
+          setDaily(nextDaily)
+          setByTag(nextByTag)
+        })
+        .catch((err) => {
+          if (sequence === trendRequest.current) {
+            setTrendError(err instanceof Error ? err.message : '趋势数据加载失败')
+          }
+        })
     } else {
       // 预设天数
-      api.stats.daily({ days: range, categoryId: filterCat || undefined }).then(setDaily).catch(() => {})
       const now = new Date()
       const from = new Date(now.getFullYear(), now.getMonth(), now.getDate())
       from.setDate(from.getDate() - (range - 1))
-      api.stats.byTag(from.toISOString(), now.toISOString(), filterCat || undefined).then(setByTag).catch(() => {})
+      Promise.all([
+        api.stats.daily({ days: range, categoryId: filterCat || undefined }),
+        api.stats.byTag(from.toISOString(), now.toISOString(), filterCat || undefined),
+      ])
+        .then(([nextDaily, nextByTag]) => {
+          if (sequence !== trendRequest.current) return
+          setDaily(nextDaily)
+          setByTag(nextByTag)
+        })
+        .catch((err) => {
+          if (sequence === trendRequest.current) {
+            setTrendError(err instanceof Error ? err.message : '趋势数据加载失败')
+          }
+        })
     }
   }, [range, filterCat, customFrom, customTo])
 
@@ -81,6 +125,12 @@ export default function StatsPage() {
         </select>
       </div>
 
+      {(summaryError || trendError) && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+          {summaryError || trendError}
+        </div>
+      )}
+
       {/* 概览卡片 */}
       <div className="grid grid-cols-3 gap-3">
         <MetricCard label="今日" value={summary ? formatDuration(summary.today) : '…'} />
@@ -96,8 +146,8 @@ export default function StatsPage() {
             {goals.map((goal) => {
               const current = goal.current ?? 0
               const target = goal.target
-              const done = current >= target
-              const percent = Math.min(100, Math.round((current / target) * 100))
+              const done = target > 0 && current >= target
+              const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0
               return (
                 <div key={goal.id} className="flex items-center gap-3 rounded-lg border border-gray-100 dark:border-gray-800 p-3">
                   {/* 进度环 */}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import type { Todo } from '../types'
@@ -42,8 +42,7 @@ function groupByDay(todos: Todo[]): { dateLabel: string; items: Todo[] }[] {
 export default function TodosPage() {
   const { tags, categories, running, start } = useStore()
   const [todos, setTodos] = useState<Todo[]>([])
-  const [activePane, setActivePane] = useState<'balanced' | 'todos' | 'diary'>('balanced')
-  const [desktopPointer, setDesktopPointer] = useState(false)
+  const [activeTab, setActiveTab] = useState<'todo' | 'diary'>('todo')
   const [filter, setFilter] = useState<'all' | 'pending' | 'done'>('pending')
   const [filterCat, setFilterCat] = useState('')
   const [daysRange, setDaysRange] = useState<DaysRange>(30)
@@ -51,52 +50,64 @@ export default function TodosPage() {
   const [quickTitle, setQuickTitle] = useState('')
   const [editing, setEditing] = useState<Todo | null>(null)
   const [pickingTagFor, setPickingTagFor] = useState<Todo | null>(null)
+  const [error, setError] = useState('')
+  const loadSequence = useRef(0)
 
   const load = async () => {
     // Always load all todos so we can split pending/done locally
-    const all = await api.todos.list()
-    setTodos(all)
+    const sequence = ++loadSequence.current
+    try {
+      const all = await api.todos.list()
+      if (sequence !== loadSequence.current) return
+      setTodos(all)
+      setError('')
+    } catch (e) {
+      if (sequence !== loadSequence.current) return
+      setError(e instanceof Error ? e.message : '加载待办失败')
+    }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { void load() }, [])
 
   const quickAdd = async () => {
     if (!quickTitle.trim()) return
-    await api.todos.create({ title: quickTitle })
-    setQuickTitle('')
-    setShowQuickAdd(false)
-    load()
+    try {
+      await api.todos.create({ title: quickTitle.trim() })
+      setQuickTitle('')
+      setShowQuickAdd(false)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '新建待办失败')
+    }
   }
 
   const toggle = async (id: string) => {
-    await api.todos.toggle(id)
-    load()
+    try {
+      await api.todos.toggle(id)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '更新待办状态失败')
+    }
   }
 
   const remove = async (id: string) => {
-    await api.todos.remove(id)
-    load()
+    if (!confirm('确定删除这条待办吗？')) return
+    try {
+      await api.todos.remove(id)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '删除待办失败')
+    }
   }
 
   const startFromTodo = async (todo: Todo, tagId: string) => {
-    await start(tagId, todo.title, todo.id)
-    setPickingTagFor(null)
-  }
-
-  useEffect(() => {
-    const media = window.matchMedia('(hover: hover) and (pointer: fine)')
-    const updatePointerMode = () => setDesktopPointer(media.matches)
-    updatePointerMode()
-    media.addEventListener?.('change', updatePointerMode)
-    return () => media.removeEventListener?.('change', updatePointerMode)
-  }, [])
-
-  const handlePaneMouseEnter = (pane: 'todos' | 'diary') => {
-    if (desktopPointer) setActivePane((current) => current === pane ? current : pane)
-  }
-
-  const handleWorkspaceMouseLeave = () => {
-    if (desktopPointer) setActivePane('balanced')
+    try {
+      await start(tagId, todo.title, todo.id)
+      setPickingTagFor(null)
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '开始计时失败')
+    }
   }
 
   // ── Category filter: match todo.categoryId ──────────────────────────────
@@ -133,34 +144,39 @@ export default function TodosPage() {
   // What to show based on filter
   const showPending = filter === 'pending' || filter === 'all'
   const showDone = filter === 'done' || filter === 'all'
-  const todosActive = activePane === 'todos'
-  const diaryActive = activePane === 'diary'
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">待办与日记</h1>
+      <div className="flex items-center gap-6 border-b border-gray-200 dark:border-gray-800" role="tablist" aria-label="待办与日记">
+        {([
+          ['todo', '待办'],
+          ['diary', '日记'],
+        ] as const).map(([tab, label]) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
+            onClick={() => setActiveTab(tab)}
+            className={`relative -mb-px pb-3 text-lg font-semibold transition-colors ${
+              activeTab === tab
+                ? 'text-brand after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-brand'
+                : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      <div
-        className="todo-diary-workspace"
-        onMouseLeave={handleWorkspaceMouseLeave}
-      >
-        <section
-          className={`todo-diary-pane ${todosActive ? 'todo-diary-pane--active' : diaryActive ? 'todo-diary-pane--compact' : ''}`}
-          onMouseEnter={() => handlePaneMouseEnter('todos')}
-          onClick={() => setActivePane('todos')}
-          data-pane="todos"
-          aria-label="待办面板"
-        >
-          <div className="todo-diary-pane__scale p-4 sm:p-5">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-xl font-bold">待办</h2>
-              <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="text-sm text-brand hover:underline whitespace-nowrap">
-                {showQuickAdd ? '取消' : '+ 新建'}
-              </button>
-            </div>
+      {error && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} className="text-xs hover:underline">关闭</button>
+        </div>
+      )}
 
+      {activeTab === 'todo' ? (
+        <section className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/40 p-4 sm:p-5">
             {showQuickAdd && (
               <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4 flex gap-2 mt-4">
                 <input
@@ -222,6 +238,10 @@ export default function TodosPage() {
                   ))}
                 </div>
               )}
+
+              <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="ml-auto text-sm text-brand hover:underline whitespace-nowrap">
+                {showQuickAdd ? '取消' : '+ 新建'}
+              </button>
             </div>
 
             {showPending && (
@@ -288,19 +308,12 @@ export default function TodosPage() {
                 )}
               </div>
             )}
-          </div>
         </section>
-
-        <section
-          className={`todo-diary-pane ${diaryActive ? 'todo-diary-pane--active' : todosActive ? 'todo-diary-pane--compact' : ''}`}
-          onMouseEnter={() => handlePaneMouseEnter('diary')}
-          onClick={() => setActivePane('diary')}
-          data-pane="diary"
-          aria-label="日记面板"
-        >
-          <DiaryPanel compact={todosActive} />
+      ) : (
+        <section className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/40 p-4 sm:p-5">
+          <DiaryPanel />
         </section>
-      </div>
+      )}
 
       {/* Edit modal */}
       {editing && (
@@ -423,18 +436,31 @@ function TodoEditModal({ todo, categories, onClose, onSaved }: {
     todo.dueDate ? new Date(todo.dueDate).toISOString().slice(0, 10) : ''
   )
   const [status, setStatus] = useState(todo.status)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   const save = async () => {
-    if (!title.trim()) return
-    await api.todos.update(todo.id, {
-      title,
-      description: description || null,
-      priority,
-      categoryId: categoryId || null,
-      dueDate: dueDate ? new Date(dueDate).toISOString() : null,
-      status,
-    })
-    onSaved()
+    if (!title.trim() || saving) {
+      if (!title.trim()) setError('标题不能为空')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await api.todos.update(todo.id, {
+        title: title.trim(),
+        description: description.trim() || null,
+        priority,
+        categoryId: categoryId || null,
+        dueDate: dueDate ? new Date(dueDate).toISOString() : null,
+        status,
+      })
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存待办失败')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -507,12 +533,13 @@ function TodoEditModal({ todo, categories, onClose, onSaved }: {
             </div>
           </div>
         </div>
+        {error && <div className="mt-4 text-sm text-red-500">{error}</div>}
         <div className="flex justify-end gap-2 mt-6">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
             取消
           </button>
-          <button onClick={save} className="px-4 py-2 rounded-lg text-sm bg-brand text-white hover:bg-brand-600">
-            保存
+          <button onClick={save} disabled={saving} className="px-4 py-2 rounded-lg text-sm bg-brand text-white hover:bg-brand-600 disabled:opacity-50">
+            {saving ? '保存中…' : '保存'}
           </button>
         </div>
       </div>

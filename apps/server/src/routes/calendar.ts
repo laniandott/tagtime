@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
+import { singleQueryString } from './query.js'
 
 // 辅助函数：将 Date 格式化为 iCalendar UTC 时间 (用于 DTSTAMP: YYYYMMDDTHHMMSSZ)
 function formatIcsUtcDate(d: Date | string): string {
@@ -29,7 +30,7 @@ function formatIcsLocalDate(d: Date | string): string {
 }
 
 // 辅助函数：根据 Hex 颜色智能映射为彩色圆点 Emoji
-function getColoredCircle(hex?: string): string {
+function getColoredCircle(hex?: string | null): string {
   if (!hex || !hex.startsWith('#')) return '🏷️'
   const r = parseInt(hex.slice(1, 3), 16) || 0
   const g = parseInt(hex.slice(3, 5), 16) || 0
@@ -51,25 +52,52 @@ function getColoredCircle(hex?: string): string {
   return '🔵'
 }
 
+function safeCalendarColor(value: string | null | undefined): string | null {
+  return value && /^#[0-9a-f]{3,8}$/i.test(value) ? value : null
+}
+
 // 辅助函数：转义 iCalendar 文本字段中的特殊字符 (\, ;, ,, 换行)
 function escapeIcsText(text: string): string {
   if (!text) return ''
   return text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .replace(/\\/g, '\\\\')
     .replace(/;/g, '\\;')
     .replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n')
+    .replace(/\r\n?|\n/g, '\\n')
+}
+
+// RFC 5545 要求内容行最多 75 个八位字节；中文/emoji 不能按 JS 字符数直接截断。
+function foldIcsLine(line: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let bytes = 0
+  for (const char of line) {
+    const charBytes = Buffer.byteLength(char, 'utf8')
+    if (current && bytes + charBytes > 75) {
+      result.push(current)
+      current = ` ${char}`
+      bytes = 1 + charBytes
+    } else {
+      current += char
+      bytes += charBytes
+    }
+  }
+  if (current || line === '') result.push(current)
+  return result
 }
 
 export default async function calendarRoutes(app: FastifyInstance) {
   // 生成 iCalendar (.ics) 日历订阅源与下载
   app.get('/feed.ics', async (req, reply) => {
-    const { days, categoryId, tagId, all, tz } = req.query as {
-      days?: string
-      categoryId?: string
-      tagId?: string
-      all?: string
-      tz?: string
+    const raw = req.query as Record<string, unknown>
+    const days = singleQueryString(raw.days)
+    const categoryId = singleQueryString(raw.categoryId)
+    const tagId = singleQueryString(raw.tagId)
+    const all = singleQueryString(raw.all)
+    const tz = singleQueryString(raw.tz)
+    if (days === null || categoryId === null || tagId === null || all === null || tz === null) {
+      return reply.code(400).send({ error: '查询参数必须是单个字符串' })
     }
 
     const where: Record<string, unknown> = {
@@ -88,7 +116,10 @@ export default async function calendarRoutes(app: FastifyInstance) {
 
     // 默认同步最近 90 天，除非显式指定 all=true 或 days=0
     if (all !== 'true' && all !== '1' && days !== '0') {
-      const dayCount = days ? parseInt(days, 10) || 90 : 90
+      const dayCount = days === undefined ? 90 : Number(days)
+      if (!Number.isInteger(dayCount) || dayCount < 1 || dayCount > 3660) {
+        return reply.code(400).send({ error: 'days 必须是 1 到 3660 的整数，或使用 all=true' })
+      }
       const sinceDate = new Date()
       sinceDate.setDate(sinceDate.getDate() - dayCount)
       where.startTime = { gte: sinceDate }
@@ -147,7 +178,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
       if (!entry.endTime) continue
 
       const catName = entry.tag.category?.name
-      const tagColor = entry.tag.color || entry.tag.category?.color
+      const tagColor = safeCalendarColor(entry.tag.color) || safeCalendarColor(entry.tag.category?.color)
       const colorIndicator = entry.tag.icon || getColoredCircle(tagColor)
       const summaryParts = []
       if (catName) summaryParts.push(`[${catName}]`)
@@ -216,7 +247,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
     }
 
     lines.push('END:VCALENDAR')
-    const icsContent = lines.join('\r\n')
+    const icsContent = lines.flatMap(foldIcsLine).join('\r\n')
 
     reply
       .header('Content-Type', 'text/calendar; charset=utf-8')

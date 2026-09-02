@@ -1,16 +1,70 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { marked } from 'marked'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import DOMPurify from 'dompurify'
 import { api, ApiError } from '../api'
 import { useNotesSocket, type NoteEvent } from '../hooks/useNotesSocket'
-import type { NoteDetail, NoteAutocompleteEntry, RelatedEntities, EntityLinkType } from '../types'
+import type { NoteDetail, RelatedEntities, EntityLinkType } from '../types'
+import MarkdownEditor, {
+  insertAroundSelection as cmInsertAround,
+  prefixSelectedLines as cmPrefixLines,
+  insertTextAtCursor as cmInsertText,
+} from '../editor/MarkdownEditor'
+import type { EditorView } from '@codemirror/view'
+import { codeRanges } from '../editor/codeRanges'
+import { createUniquePlaceholder } from '../editor/placeholders'
 
-type Mode = 'edit' | 'preview'
+type Mode = 'live' | 'edit' | 'split' | 'preview'
+
+function normalizeMathExpression(expression: string): string {
+  // 用户笔记里常用 Markdown 的转义下划线（\\_），在 LaTeX 中应还原为下标符号。
+  return expression.replace(/\\_/g, '_').trim()
+}
+
+function isInsideRange(position: number, ranges: Array<[number, number]>): boolean {
+  return ranges.some(([start, end]) => position >= start && position < end)
+}
 
 function renderMarkdown(content: string): string {
-  const html = marked.parse(content || '', { async: false, breaks: true }) as string
+  const source = content || ''
+  const ranges = codeRanges(source)
+  const mathTokens: Array<{ token: string; html: string; display: boolean }> = []
+  const usedPlaceholders = new Set<string>()
+  const mathPattern = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^\n$]+?\$/g
+  const markdown = source.replace(mathPattern, (full, offset: number) => {
+    if (isInsideRange(offset, ranges)) return full
+    const display = full.startsWith('$$') || full.startsWith('\\[')
+    const expression = display
+      ? full.startsWith('$$')
+        ? full.slice(2, -2)
+        : full.slice(2, -2)
+      : full.startsWith('\\(')
+        ? full.slice(2, -2)
+        : full.slice(1, -1)
+    const token = createUniquePlaceholder('TAGTIMEMATH', source, usedPlaceholders)
+    const html = katex.renderToString(normalizeMathExpression(expression), {
+      displayMode: display,
+      throwOnError: false,
+      strict: 'ignore',
+      trust: false,
+    })
+    mathTokens.push({ token, html, display })
+    return token
+  })
+  let html = marked.parse(markdown, { async: false, breaks: true }) as string
+  for (const { token, html: mathHtml, display } of mathTokens) {
+    const paragraph = new RegExp(`<p>\\s*${token}\\s*</p>`, 'g')
+    html = html.replace(paragraph, display ? mathHtml : `<span class="math-inline">${mathHtml}</span>`)
+    html = html.replaceAll(token, display ? mathHtml : `<span class="math-inline">${mathHtml}</span>`)
+  }
   return DOMPurify.sanitize(html)
+}
+
+function folderFromPath(path: string): string {
+  const index = path.lastIndexOf('/')
+  return index === -1 ? '' : path.slice(0, index)
 }
 
 export default function NoteEditorPage() {
@@ -19,11 +73,28 @@ export default function NoteEditorPage() {
   const [note, setNote] = useState<NoteDetail | null>(null)
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
-  const [mode, setMode] = useState<Mode>('edit')
+  const [mode, setMode] = useState<Mode>('live')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<EditorView | null>(null)
+  const localMutationRef = useRef(false)
+  const localMutationTimerRef = useRef<number | null>(null)
+  const loadSequence = useRef(0)
+  const folderRequest = useRef(0)
+  const entitiesRequest = useRef(0)
+  const [folders, setFolders] = useState<string[]>([])
+
+  const beginLocalMutation = () => {
+    if (localMutationTimerRef.current !== null) window.clearTimeout(localMutationTimerRef.current)
+    localMutationRef.current = true
+  }
+  const finishLocalMutation = () => {
+    localMutationTimerRef.current = window.setTimeout(() => {
+      localMutationRef.current = false
+      localMutationTimerRef.current = null
+    }, 500)
+  }
 
   // 冲突：服务器已有更新的版本
   const [conflict, setConflict] = useState<{ serverContent: string; serverRevision: number } | null>(null)
@@ -34,14 +105,14 @@ export default function NoteEditorPage() {
   const stateRef = useRef({ note, content, dirty, id })
   stateRef.current = { note, content, dirty, id }
 
-  // [[ 补全
-  const [ac, setAc] = useState(false)
-  const [acResults, setAcResults] = useState<NoteAutocompleteEntry[]>([])
-
   // 关联的 TagTime 实体
   const [entities, setEntities] = useState<RelatedEntities | null>(null)
 
   const previewHtml = useMemo(() => renderMarkdown(content), [content])
+
+  const changeMode = (next: Mode) => {
+    setMode(next)
+  }
 
   const refreshSilently = async (detail: NoteDetail) => {
     setNote(detail)
@@ -52,23 +123,37 @@ export default function NoteEditorPage() {
 
   const load = async () => {
     if (!id) return
+    const sequence = ++loadSequence.current
     try {
       const n = await api.notes.get(id)
+      if (sequence !== loadSequence.current) return
       await refreshSilently(n)
+      setError('')
     } catch (e: any) {
+      if (sequence !== loadSequence.current) return
       setError(e.message)
     }
   }
-  useEffect(() => { setConflict(null); load() }, [id])
+  useEffect(() => {
+    setConflict(null)
+    void load()
+    const sequence = ++folderRequest.current
+    api.notes.folders()
+      .then((result) => { if (sequence === folderRequest.current) setFolders(result.folders) })
+      .catch(() => { if (sequence === folderRequest.current) setFolders([]) })
+  }, [id])
   // 加载关联的 TagTime 实体
   const reloadEntities = () => {
     if (!id) return
-    api.notes.entities(id).then(setEntities).catch(() => setEntities(null))
+    const sequence = ++entitiesRequest.current
+    api.notes.entities(id)
+      .then((result) => { if (sequence === entitiesRequest.current) setEntities(result) })
+      .catch(() => { if (sequence === entitiesRequest.current) setEntities(null) })
   }
   useEffect(() => {
     if (!id) return
     setEntities(null)
-    api.notes.entities(id).then(setEntities).catch(() => setEntities(null))
+    reloadEntities()
   }, [id])
 
   // 服务器已有较新版本 → 进入冲突处理
@@ -84,12 +169,14 @@ export default function NoteEditorPage() {
   const save = async (): Promise<boolean> => {
     if (!note) return true
     setSaving(true)
+    beginLocalMutation()
     try {
       const r = await api.notes.update(note.id, { content, revision: note.revision })
       setNote((n) => (n ? { ...n, content, revision: r.revision } : n))
       setDirty(false)
       setConflict(null)
       setShowMerge(false)
+      setError('')
       reloadEntities()
       return true
     } catch (e: any) {
@@ -102,6 +189,7 @@ export default function NoteEditorPage() {
       return false
     } finally {
       setSaving(false)
+      finishLocalMutation()
     }
   }
 
@@ -118,20 +206,25 @@ export default function NoteEditorPage() {
 
   const overwriteServer = async () => {
     if (!note || !conflict) return
+    beginLocalMutation()
     try {
       const r = await api.notes.update(note.id, { content, revision: conflict.serverRevision })
       setNote((n) => (n ? { ...n, content, revision: r.revision } : n))
       setConflict(null)
       setShowMerge(false)
       setDirty(false)
+      setError('')
       reloadEntities()
     } catch (e: any) {
       setError(`覆盖失败：${e.message}`)
+    } finally {
+      finishLocalMutation()
     }
   }
 
   const submitMerge = async () => {
     if (!note || !conflict || !showMerge) return
+    beginLocalMutation()
     try {
       const r = await api.notes.update(note.id, { content: mergeText, revision: conflict.serverRevision })
       setContent(mergeText)
@@ -139,27 +232,53 @@ export default function NoteEditorPage() {
       setConflict(null)
       setShowMerge(false)
       setDirty(false)
+      setError('')
+      reloadEntities()
     } catch (e: any) {
       setError(`合并保存失败：${e.message}`)
+    } finally {
+      finishLocalMutation()
     }
   }
 
   const rename = async () => {
     if (!note || !title.trim() || title.trim() === note.title) return
+    beginLocalMutation()
     try {
       const r = await api.notes.rename(note.id, { title: title.trim() })
-      setNote((n) => (n ? { ...n, title: r.title, path: r.path } : n))
+      setNote((n) => (n ? { ...n, title: r.title, path: r.path, revision: r.revision } : n))
+      setError('')
     } catch (e: any) {
       setError(`重命名失败：${e.message}`)
       setTitle(note.title)
+    } finally {
+      finishLocalMutation()
+    }
+  }
+
+  const moveToFolder = async (folder: string) => {
+    if (!note || folder === folderFromPath(note.path)) return
+    beginLocalMutation()
+    try {
+      const result = await api.notes.rename(note.id, { folder })
+      setNote((current) => current ? { ...current, path: result.path, revision: result.revision } : current)
+      setError('')
+    } catch (e: any) {
+      setError(`移动失败：${e.message}`)
+    } finally {
+      finishLocalMutation()
     }
   }
 
   const remove = async () => {
     if (!note) return
     if (!confirm(`确定删除笔记「${note.title}」？其它文件中的引用不会删除。`)) return
-    await api.notes.remove(note.id)
-    navigate('/notes')
+    try {
+      await api.notes.remove(note.id)
+      navigate('/notes')
+    } catch (e: any) {
+      setError(`删除失败：${e.message}`)
+    }
   }
 
   // WebSocket 实时事件
@@ -169,6 +288,7 @@ export default function NoteEditorPage() {
       navigate('/notes')
       return
     }
+    if (ev.id === cur.id && localMutationRef.current) return
     if (cur.id && ev.id === cur.id && (ev.type === 'note.updated' || ev.type === 'note.created' || ev.type === 'note.renamed')) {
       const evRev = 'revision' in ev ? ev.revision : (cur.note?.revision ?? -1)
       const isSelfEcho = evRev <= (cur.note?.revision ?? -1) && !cur.dirty
@@ -205,53 +325,15 @@ export default function NoteEditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const triggerAutocomplete = (textarea: HTMLTextAreaElement) => {
-    const v = textarea.value
-    const pos = textarea.selectionStart
-    const before = v.slice(0, pos)
-    const m = /\[\[([^\[\]]*)$/.exec(before)
-    if (m) {
-      const q = m[1].trim()
-      api.notes.autocomplete(q).then(setAcResults).catch(() => {})
-      setAc(true)
-    } else {
-      setAc(false)
-    }
+  // 工具栏命令辅助：作用于 CodeMirror EditorView（live/edit/split 下均有视图）
+  const runTool = (fn: (view: EditorView) => void) => {
+    const view = editorRef.current
+    if (view) fn(view)
   }
 
-  const insertLink = (entry: NoteAutocompleteEntry) => {
-    if (!taRef.current || !ac) return
-    const ta = taRef.current
-    const v = ta.value
-    const pos = ta.selectionStart
-    const before = v.slice(0, pos)
-    const m = /\[\[([^\[\]]*)$/.exec(before)
-    const startIdx = m ? pos - m[0].length : pos
-    const insertText = `[[${entry.title}]]`
-    const next = v.slice(0, startIdx) + insertText + v.slice(pos)
-    setContent(next)
-    setDirty(true)
-    setAc(false)
-    requestAnimationFrame(() => {
-      ta.focus()
-      ta.setSelectionRange(startIdx + insertText.length, startIdx + insertText.length)
-    })
-  }
-
-  // 在光标处插入特殊链接占位；点击已有 entityKey 则填充实际键
+  // 在编辑器光标处插入特殊链接占位；点击已有 entityKey 则填充实际键
   const insertEntityLink = (type: EntityLinkType, entityKey = '') => {
-    if (!taRef.current) return
-    const ta = taRef.current
-    const v = ta.value
-    const pos = ta.selectionStart
-    const token = `[[${type}:${entityKey}]]`
-    const next = v.slice(0, pos) + token + v.slice(pos)
-    setContent(next)
-    setDirty(true)
-    requestAnimationFrame(() => {
-      ta.focus()
-      ta.setSelectionRange(pos + token.length, pos + token.length)
-    })
+    runTool((view) => cmInsertText(view, `[[${type}:${entityKey}]]`))
   }
 
   // 跳转到 TagTime 现有页面
@@ -269,8 +351,22 @@ export default function NoteEditorPage() {
     return <div className="p-6 text-sm text-gray-400">加载中…</div>
   }
 
+  const markdownTools = [
+    { label: 'H', title: '标题', action: () => runTool((v) => cmPrefixLines(v, '## ')) },
+    { label: 'B', title: '粗体', action: () => runTool((v) => cmInsertAround(v, '**', '**', '粗体文字')) },
+    { label: 'I', title: '斜体', action: () => runTool((v) => cmInsertAround(v, '*', '*', '斜体文字')) },
+    { label: 'S', title: '删除线', action: () => runTool((v) => cmInsertAround(v, '~~', '~~', '删除文字')) },
+    { label: '•', title: '无序列表', action: () => runTool((v) => cmPrefixLines(v, '- ')) },
+    { label: '1.', title: '有序列表', action: () => runTool((v) => cmPrefixLines(v, '1. ')) },
+    { label: '☐', title: '任务列表', action: () => runTool((v) => cmPrefixLines(v, '- [ ] ')) },
+    { label: '❯', title: '引用', action: () => runTool((v) => cmPrefixLines(v, '> ')) },
+    { label: '<>', title: '行内代码', action: () => runTool((v) => cmInsertAround(v, '`', '`', '代码')) },
+    { label: '[ ]', title: '链接', action: () => runTool((v) => cmInsertAround(v, '[', '](https://)', '链接文字')) },
+    { label: '```', title: '代码块', action: () => runTool((v) => cmInsertAround(v, '```\n', '\n```', '代码')) },
+  ]
+
   return (
-    <div className="max-w-4xl mx-auto space-y-3">
+    <div className="max-w-6xl mx-auto space-y-3">
       <div className="flex items-center justify-between gap-2">
         <button onClick={() => navigate('/notes')} className="text-sm text-brand hover:underline">
           ← 返回列表
@@ -296,7 +392,7 @@ export default function NoteEditorPage() {
           <button
             onClick={save}
             disabled={saving || dirty === false}
-            className="px-3 py-1.5 text-sm bg-brand text-white rounded-xl disabled:opacity-40"
+            className="px-3 py-1.5 text-sm bg-brand text-white rounded-lg disabled:opacity-40"
           >
             保存
           </button>
@@ -345,66 +441,110 @@ export default function NoteEditorPage() {
 
       <input
         value={title}
-        onChange={(e) => { setTitle(e.target.value); setDirty(true) }}
+        onChange={(e) => setTitle(e.target.value)}
         onBlur={rename}
         className="w-full px-1 py-1 text-2xl font-bold bg-transparent text-gray-900 dark:text-gray-50 focus:outline-none"
         placeholder="笔记标题"
       />
 
-      <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
-        <span className="truncate">{note.path} · rev {note.revision}</span>
-        <div className="flex gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400 dark:text-gray-500">
+        <div className="flex min-w-0 items-center gap-2">
+          <select
+            value={folderFromPath(note.path)}
+            onChange={(event) => void moveToFolder(event.target.value)}
+            className="max-w-[220px] rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-600 dark:text-gray-300"
+            title="移动到文件夹"
+          >
+            <option value="">根目录</option>
+            {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
+          </select>
+          <span className="truncate">{note.path} · rev {note.revision}</span>
+        </div>
+        <div className="flex gap-1" role="group" aria-label="编辑器视图">
           <button
-            onClick={() => setMode('edit')}
-            className={`px-2.5 py-1 rounded-lg ${mode === 'edit' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
+            onClick={() => changeMode('live')}
+            className={`px-2.5 py-1 rounded-md ${mode === 'live' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
+            title="光标所在行显示源码，其余行实时渲染"
+          >
+            所见即所得
+          </button>
+          <button
+            onClick={() => changeMode('edit')}
+            className={`px-2.5 py-1 rounded-md ${mode === 'edit' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
           >
             编辑
           </button>
           <button
-            onClick={() => setMode('preview')}
-            className={`px-2.5 py-1 rounded-lg ${mode === 'preview' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
+            onClick={() => changeMode('split')}
+            className={`px-2.5 py-1 rounded-md ${mode === 'split' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
+          >
+            分栏
+          </button>
+          <button
+            onClick={() => changeMode('preview')}
+            className={`px-2.5 py-1 rounded-md ${mode === 'preview' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
           >
             预览
           </button>
         </div>
       </div>
 
-      <div className="relative">
-        {mode === 'edit' ? (
-          <textarea
-            ref={taRef}
-            value={content}
-            onChange={(e) => { setContent(e.target.value); setDirty(true); triggerAutocomplete(e.target) }}
-            onKeyDown={(e) => { if (e.key === 'Escape') setAc(false) }}
-            spellCheck={false}
-            className="w-full min-h-[60vh] px-3 py-3 text-sm font-mono rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand/40 resize-y"
-            placeholder="支持 Markdown，输入 [[ 可引用其它笔记"
-          />
-        ) : (
-          <div
-            className="min-h-[60vh] px-4 py-4 text-sm rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 prose-preview"
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-          />
-        )}
-        {ac && (
-          <div className="absolute left-0 right-0 bottom-0 max-h-48 overflow-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg z-10">
-            {acResults.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-gray-400">未找到匹配笔记（将作为未解析链接保留）</div>
-            ) : (
-              acResults.map((r) => (
-                <button
-                  key={r.id}
-                  onClick={() => insertLink(r)}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-brand/10"
-                >
-                  <span className="text-brand">{r.title}</span>
-                  <span className="ml-2 text-xs text-gray-400">{r.path}</span>
-                </button>
-              ))
-            )}
+      {mode !== 'preview' && (
+        <div className="flex min-h-9 items-center gap-1 overflow-x-auto border-y border-gray-200 dark:border-gray-800 py-1" role="toolbar" aria-label="Markdown 格式">
+          {markdownTools.map((tool) => (
+            <button
+              key={tool.title}
+              type="button"
+              title={tool.title}
+              aria-label={tool.title}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={tool.action}
+              className={`shrink-0 min-w-8 h-7 px-2 rounded-md text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 ${tool.label === 'B' ? 'font-bold' : tool.label === 'I' ? 'italic' : ''}`}
+            >
+              {tool.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === 'live' && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2 min-h-[48vh] md:min-h-[60vh]">
+          <div className="mb-2 text-xs text-gray-400 dark:text-gray-500">
+            光标所在行显示源码，移开后该行实时渲染
           </div>
-        )}
-      </div>
+          <MarkdownEditor
+            key={note.id}
+            value={content}
+            mode="live"
+            editorRef={editorRef}
+            onChange={(next) => { setContent(next); setDirty(true) }}
+            autoFocus={false}
+          />
+        </div>
+      )}
+
+      {mode !== 'live' && (
+        <div className={mode === 'split' ? 'grid grid-cols-1 md:grid-cols-2 gap-2' : ''}>
+          {mode !== 'preview' && (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2 min-h-[48vh] md:min-h-[60vh]">
+              <MarkdownEditor
+                key={note.id}
+                value={content}
+                mode="source"
+                editorRef={editorRef}
+                onChange={(next) => { setContent(next); setDirty(true) }}
+                autoFocus={false}
+              />
+            </div>
+          )}
+          {mode !== 'edit' && (
+            <div
+              className="min-h-[48vh] md:min-h-[60vh] px-4 py-4 text-sm rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 prose-preview overflow-auto"
+              dangerouslySetInnerHTML={{ __html: previewHtml }}
+            />
+          )}
+        </div>
+      )}
 
       {(note.outLinks.length > 0 || note.inLinks.length > 0) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

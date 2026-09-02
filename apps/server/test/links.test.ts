@@ -6,6 +6,7 @@ import {
   isEntityLinkKey,
   normalizeTitleKey,
 } from '../src/links.js'
+import { rewriteTitleLinks } from '../src/notes.js'
 
 test('normalizeTitleKey：trim/合并空白/小写', () => {
   assert.equal(normalizeTitleKey('  A   B  '), 'a b')
@@ -42,4 +43,10 @@ test('parseEntityLinks：解析 tag/todo/date/memo 并保留别名', () => {
   )
   // 非特殊前缀不给实体
   assert.equal(parseEntityLinks('[[普通标题]]').length, 0)
+})
+
+test('rewriteTitleLinks：不改写转义的 Wiki 链接', () => {
+  const source = String.raw`转义 \[[Old]]，正常 [[Old]]，双反斜杠 \\[[Old]]`
+  const result = rewriteTitleLinks(source, 'Old', 'New')
+  assert.equal(result, String.raw`转义 \[[Old]]，正常 [[New]]，双反斜杠 \\[[New]]`)
 })
