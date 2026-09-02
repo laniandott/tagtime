@@ -3,7 +3,7 @@ import type { Text, EditorState, Extension, SelectionRange } from '@codemirror/s
 import { Decoration, DecorationSet, EditorView } from '@codemirror/view'
 import { parseMarkdown, type Token } from './markdownTokens'
 import { activeLineNumbers, tokensToRender } from './livePreview'
-import { MathWidget, ImageWidget, SymbolWidget, TableWidget, TaskWidget, CodeBlockWidget } from './markdownWidgets'
+import { MathWidget, ImageWidget, SymbolWidget, TableWidget, TaskWidget, CodeBlockWidget, type CodeLineSourceRange } from './markdownWidgets'
 
 // 单个待添加的装饰区间；先收集再按 (from, startSide) 全局排序，
 // 避免重叠 token（例如 *斜体* 内部又嵌套 **粗体**）导致插入乱序而抛错。
@@ -11,6 +11,28 @@ interface DecoEntry {
   from: number
   to: number
   deco: Decoration
+}
+
+function fenceSourceLines(doc: Text, from: number, to: number): CodeLineSourceRange[] {
+  const source = doc.sliceString(from, to)
+  const lines = source.split('\n')
+  if (lines.length < 2) return []
+  const opening = lines[0]?.trim() ?? ''
+  const marker = opening.match(/^(`{3,}|~{3,})/)?.[1]
+  if (!marker) return []
+  const closing = lines[lines.length - 1]?.trim() ?? ''
+  const hasClosing = new RegExp(`^${marker[0]}{${marker.length},}[ \\t]*$`).test(closing)
+  const start = 1
+  const end = hasClosing ? lines.length - 1 : lines.length
+  const ranges: CodeLineSourceRange[] = []
+  let offset = from
+  for (let index = 0; index < lines.length; index++) {
+    if (index >= start && index < end) {
+      ranges.push({ from: offset, to: offset + lines[index].length })
+    }
+    offset += lines[index].length + 1
+  }
+  return ranges
 }
 
 function apply(t: Token, doc: Text, out: DecoEntry[]): void {
@@ -53,7 +75,7 @@ function apply(t: Token, doc: Text, out: DecoEntry[]): void {
       break
     }
     case 'fence': {
-      add(t.from, t.to, Decoration.replace({ widget: new CodeBlockWidget(t.content, t.language, t.from, t.to), block: true }))
+      add(t.from, t.to, Decoration.replace({ widget: new CodeBlockWidget(t.content, t.language, t.from, t.to, fenceSourceLines(doc, t.from, t.to)), block: true }))
       break
     }
     case 'strong': {

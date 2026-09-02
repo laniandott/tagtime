@@ -84,6 +84,17 @@ export default function NoteEditorPage() {
   const folderRequest = useRef(0)
   const entitiesRequest = useRef(0)
   const [folders, setFolders] = useState<string[]>([])
+  const [compactHeader, setCompactHeader] = useState(false)
+
+  useEffect(() => {
+    const updateHeader = () => {
+      const next = window.scrollY > 72
+      setCompactHeader((current) => current === next ? current : next)
+    }
+    updateHeader()
+    window.addEventListener('scroll', updateHeader, { passive: true })
+    return () => window.removeEventListener('scroll', updateHeader)
+  }, [])
 
   const beginLocalMutation = () => {
     if (localMutationTimerRef.current !== null) window.clearTimeout(localMutationTimerRef.current)
@@ -364,38 +375,91 @@ export default function NoteEditorPage() {
     { label: '[ ]', title: '链接', action: () => runTool((v) => cmInsertAround(v, '[', '](https://)', '链接文字')) },
     { label: '```', title: '代码块', action: () => runTool((v) => cmInsertAround(v, '```\n', '\n```', '代码')) },
   ]
+  const modeButtonClass = (active: boolean) => `rounded-md ${compactHeader ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1'} ${active ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`
 
   return (
     <div className="max-w-6xl mx-auto space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <button onClick={() => navigate('/notes')} className="text-sm text-brand hover:underline">
-          ← 返回列表
-        </button>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => navigate(`/notes/${note.id}/graph`)}
-            className="text-sm px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-          >
-            🕸 关联图
+      <div className={`sticky top-14 z-[9] -mx-2 px-2 sm:-mx-4 sm:px-4 bg-gray-50/95 dark:bg-gray-950/95 backdrop-blur-md transition-all duration-200 ${compactHeader ? 'border-b border-gray-200 py-1 shadow-sm dark:border-gray-800' : 'border-b border-transparent py-1.5'}`}>
+        <div className={`flex items-center justify-between ${compactHeader ? 'gap-1' : 'gap-2'}`}>
+          <button onClick={() => navigate('/notes')} className="shrink-0 text-sm text-brand hover:underline">
+            ← 返回列表
           </button>
-          {dirty ? (
-            <span className="text-xs text-amber-500">● 有未保存修改</span>
-          ) : (
-            <span className="text-xs text-gray-400">已保存</span>
-          )}
-          <button
-            onClick={remove}
-            className="px-2.5 py-1.5 text-xs text-red-500 border border-red-200 dark:border-red-900 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
-          >
-            删除
-          </button>
-          <button
-            onClick={save}
-            disabled={saving || dirty === false}
-            className="px-3 py-1.5 text-sm bg-brand text-white rounded-lg disabled:opacity-40"
-          >
-            保存
-          </button>
+          <div className={`flex min-w-0 items-center ${compactHeader ? 'gap-1' : 'gap-2'}`}>
+            <button
+              onClick={() => navigate(`/notes/${note.id}/graph`)}
+              className={`${compactHeader ? 'px-2 py-1 text-xs' : 'px-2.5 py-1 text-sm'} rounded-lg border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors`}
+            >
+              🕸 关联图
+            </button>
+            {dirty ? (
+              <span className="whitespace-nowrap text-xs text-amber-500">● 有未保存修改</span>
+            ) : (
+              <span className="whitespace-nowrap text-xs text-gray-400">已保存</span>
+            )}
+            <button
+              onClick={remove}
+              className={`${compactHeader ? 'px-2 py-1' : 'px-2.5 py-1.5'} whitespace-nowrap text-xs text-red-500 border border-red-200 dark:border-red-900 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20`}
+            >
+              删除
+            </button>
+            <button
+              onClick={save}
+              disabled={saving || dirty === false}
+              className={`${compactHeader ? 'px-2.5 py-1' : 'px-3 py-1.5'} whitespace-nowrap text-sm bg-brand text-white rounded-lg disabled:opacity-40`}
+            >
+              保存
+            </button>
+          </div>
+        </div>
+
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={rename}
+          className={`mt-1 w-full min-w-0 bg-transparent px-1 font-bold text-gray-900 transition-[font-size] focus:outline-none dark:text-gray-50 ${compactHeader ? 'py-0.5 text-base' : 'py-1 text-2xl'}`}
+          placeholder="笔记标题"
+        />
+
+        <div className={`flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400 dark:text-gray-500 ${compactHeader ? 'mt-0.5' : ''}`}>
+          <div className="flex min-w-0 items-center gap-2">
+            <select
+              value={folderFromPath(note.path)}
+              onChange={(event) => void moveToFolder(event.target.value)}
+              className="max-w-[220px] rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-600 dark:text-gray-300"
+              title="移动到文件夹"
+            >
+              <option value="">根目录</option>
+              {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
+            </select>
+            <span className={`truncate ${compactHeader ? 'hidden' : ''}`}>{note.path} · rev {note.revision}</span>
+          </div>
+          <div className={`flex gap-1 ${compactHeader ? 'shrink-0' : ''}`} role="group" aria-label="编辑器视图">
+            <button
+              onClick={() => changeMode('live')}
+              className={modeButtonClass(mode === 'live')}
+              title="光标所在行显示源码，其余行实时渲染"
+            >
+              所见即所得
+            </button>
+            <button
+              onClick={() => changeMode('edit')}
+              className={modeButtonClass(mode === 'edit')}
+            >
+              编辑
+            </button>
+            <button
+              onClick={() => changeMode('split')}
+              className={modeButtonClass(mode === 'split')}
+            >
+              分栏
+            </button>
+            <button
+              onClick={() => changeMode('preview')}
+              className={modeButtonClass(mode === 'preview')}
+            >
+              预览
+            </button>
+          </div>
         </div>
       </div>
 
@@ -438,56 +502,6 @@ export default function NoteEditorPage() {
           )}
         </div>
       )}
-
-      <input
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        onBlur={rename}
-        className="w-full px-1 py-1 text-2xl font-bold bg-transparent text-gray-900 dark:text-gray-50 focus:outline-none"
-        placeholder="笔记标题"
-      />
-
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400 dark:text-gray-500">
-        <div className="flex min-w-0 items-center gap-2">
-          <select
-            value={folderFromPath(note.path)}
-            onChange={(event) => void moveToFolder(event.target.value)}
-            className="max-w-[220px] rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-600 dark:text-gray-300"
-            title="移动到文件夹"
-          >
-            <option value="">根目录</option>
-            {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
-          </select>
-          <span className="truncate">{note.path} · rev {note.revision}</span>
-        </div>
-        <div className="flex gap-1" role="group" aria-label="编辑器视图">
-          <button
-            onClick={() => changeMode('live')}
-            className={`px-2.5 py-1 rounded-md ${mode === 'live' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
-            title="光标所在行显示源码，其余行实时渲染"
-          >
-            所见即所得
-          </button>
-          <button
-            onClick={() => changeMode('edit')}
-            className={`px-2.5 py-1 rounded-md ${mode === 'edit' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
-          >
-            编辑
-          </button>
-          <button
-            onClick={() => changeMode('split')}
-            className={`px-2.5 py-1 rounded-md ${mode === 'split' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
-          >
-            分栏
-          </button>
-          <button
-            onClick={() => changeMode('preview')}
-            className={`px-2.5 py-1 rounded-md ${mode === 'preview' ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}
-          >
-            预览
-          </button>
-        </div>
-      </div>
 
       {mode !== 'preview' && (
         <div className="flex min-h-9 items-center gap-1 overflow-x-auto border-y border-gray-200 dark:border-gray-800 py-1" role="toolbar" aria-label="Markdown 格式">

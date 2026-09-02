@@ -13,7 +13,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-10 bg-white/80 dark:bg-gray-950/80 backdrop-blur-md border-b border-gray-100 dark:border-gray-800/60">
-        <div className="max-w-4xl mx-auto px-2 sm:px-4 h-14 flex items-center justify-between gap-2">
+        <div className="w-full px-2 sm:px-4 h-14 flex items-center justify-between gap-2">
           <div className="flex shrink-0 items-center gap-2 font-semibold text-brand">
             <img src="/favicon.png" alt="TagTime" className="w-7 h-7 rounded" />
             <span className="hidden sm:inline">TagTime</span>

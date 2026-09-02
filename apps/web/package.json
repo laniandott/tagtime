@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --import tsx --test test/markdownTokens.test.ts test/formula.test.ts test/livePreview.test.ts test/api.test.ts"
+    "test": "node --import tsx --test test/markdownTokens.test.ts test/formula.test.ts test/livePreview.test.ts test/api.test.ts test/notesTree.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

@@ -20,7 +20,7 @@ interface NoteFolderNode {
   notes: NoteListEntry[]
 }
 
-function buildNoteTree(folders: string[], notes: NoteListEntry[]): NoteFolderNode {
+export function buildNoteTree(folders: string[], notes: NoteListEntry[]): NoteFolderNode {
   const nodes = new Map<string, NoteFolderNode>()
 
   const ensure = (rawPath: string): NoteFolderNode => {
@@ -31,7 +31,8 @@ function buildNoteTree(folders: string[], notes: NoteListEntry[]): NoteFolderNod
     const node: NoteFolderNode = { path, name: folderName(path), children: [], notes: [] }
     nodes.set(path, node)
     if (path) {
-      const parentPath = path.slice(0, path.lastIndexOf('/'))
+      const separator = path.lastIndexOf('/')
+      const parentPath = separator === -1 ? '' : path.slice(0, separator)
       ensure(parentPath).children.push(node)
     }
     return node
@@ -269,7 +270,14 @@ export default function NotesPage() {
         {sidebarOpen && (
           <aside className="w-64 shrink-0 border-r border-gray-200 dark:border-gray-800">
             <div className="flex h-11 items-center justify-between border-b border-gray-100 px-3 text-sm font-semibold text-gray-700 dark:border-gray-800 dark:text-gray-200">
-              <span>文件</span>
+              <button
+                type="button"
+                onClick={() => setSelectedFolder(null)}
+                className={`truncate text-left hover:text-brand ${selectedFolder === null ? 'text-brand' : ''}`}
+                title="显示全部笔记"
+              >
+                文件
+              </button>
               <button
                 type="button"
                 onClick={() => { setShowNewFolder((value) => !value); setShowNew(false) }}
@@ -281,24 +289,6 @@ export default function NotesPage() {
               </button>
             </div>
             <div className="max-h-[calc(100vh-300px)] overflow-y-auto p-2">
-              <button
-                type="button"
-                onClick={() => setSelectedFolder(null)}
-                className={`mb-1 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm ${selectedFolder === null ? 'bg-brand/10 text-brand font-medium' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'}`}
-              >
-                <span className="w-4 text-center text-xs">⌂</span>
-                <span className="truncate">全部笔记</span>
-                <span className="ml-auto text-xs text-gray-400">{notes.length}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedFolder('')}
-                className={`mb-1 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm ${selectedFolder === '' ? 'bg-brand/10 text-brand font-medium' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'}`}
-              >
-                <span className="w-4 text-center text-xs">⌄</span>
-                <span className="truncate">根目录</span>
-                <span className="ml-auto text-xs text-gray-400">{noteTree.notes.length}</span>
-              </button>
               <NoteTreeNode
                 node={noteTree}
                 expandedFolders={openFolders}
