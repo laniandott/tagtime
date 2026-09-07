@@ -358,6 +358,31 @@ export class SymbolWidget extends WidgetType {
   }
 }
 
+export class HorizontalRuleWidget extends WidgetType {
+  constructor(
+    readonly sourceFrom: number,
+    readonly sourceTo: number,
+  ) {
+    super()
+  }
+
+  eq(other: HorizontalRuleWidget): boolean {
+    return other.sourceFrom === this.sourceFrom && other.sourceTo === this.sourceTo
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement('span')
+    el.className = 'cm-hr-widget'
+    el.setAttribute('role', 'separator')
+    bindSourcePosition(el, this.sourceFrom, this.sourceTo)
+    return el
+  }
+
+  ignoreEvent(): boolean {
+    return false
+  }
+}
+
 export class TaskWidget extends WidgetType {
   constructor(
     readonly checked: boolean,

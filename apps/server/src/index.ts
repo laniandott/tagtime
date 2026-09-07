@@ -6,7 +6,6 @@ import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
 
 import multipart from '@fastify/multipart'
-import websocket from '@fastify/websocket'
 
 import categoryRoutes from './routes/categories.js'
 import tagRoutes from './routes/tags.js'
@@ -17,9 +16,6 @@ import goalRoutes from './routes/goals.js'
 import memoRoutes, { UPLOAD_DIR } from './routes/memos.js'
 import calendarRoutes from './routes/calendar.js'
 import calendarsRoutes from './routes/calendars.js'
-import noteRoutes from './routes/notes.js'
-import { reconcileNotesOnStartup } from './notes.js'
-import { trackNotesDirectory } from './notes-watcher.js'
 import { BODY_SIZE_LIMIT } from './config.js'
 import { isSafeUploadPath } from './upload-path.js'
 
@@ -57,7 +53,6 @@ await app.register(multipart, {
     fileSize: 100 * 1024 * 1024, // 支持最高 100MB 视频/图片上传
   },
 })
-await app.register(websocket)
 
 // 轻量存活检查：不访问数据库，避免健康检查本身放大数据库压力。
 app.get('/healthz', async () => ({ ok: true }))
@@ -70,12 +65,6 @@ await app.register(fastifyStatic, {
   decorateReply: false,
 })
 
-// 启动重建：让文件与索引对齐（在注册路由之前执行）
-await reconcileNotesOnStartup()
-
-// 注册文件监听器（在重建索引之后、路由就绪之前）
-trackNotesDirectory()
-
 // API routes
 await app.register(categoryRoutes, { prefix: '/api/categories' })
 await app.register(tagRoutes, { prefix: '/api/tags' })
@@ -86,7 +75,6 @@ await app.register(goalRoutes, { prefix: '/api/goals' })
 await app.register(memoRoutes, { prefix: '/api/memos' })
 await app.register(calendarRoutes, { prefix: '/api/calendar' })
 await app.register(calendarsRoutes, { prefix: '/api/calendars' })
-await app.register(noteRoutes, { prefix: '/api/notes' })
 
 // Serve built frontend (production)
 const webDist = join(__dirname, '..', '..', 'web', 'dist')

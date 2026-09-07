@@ -29,6 +29,7 @@ model Category {
 
 /// 标签：归属某个分类，如 日常/吃饭、工作/编码
 /// trackType: "time"=时长计时（默认），"count"=次数打卡
+/// mode: "chaos"=混沌（只能中止），"ordered"=有序（可暂停）
 model Tag {
   id         String   @id @default(cuid())
   name       String
@@ -36,6 +37,7 @@ model Tag {
   icon       String?
   categoryId String?
   trackType  String   @default("time") // time | count
+  mode       String   @default("chaos") // chaos | ordered
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -49,23 +51,39 @@ model Tag {
 }
 
 /// 时间记录：一次计时的开始与结束。endTime 为 null 表示进行中
+/// pendingResume: 是否处于"待续"状态（暂停后等待续接）
+/// dismissed: "算了"后标记为 true，统计时排除
+/// dismissReason: "算了"时强制填入的原因
+/// resumedFromId: 指回被暂停的前一段，形成续接链
 model TimeEntry {
-  id        String    @id @default(cuid())
-  startTime DateTime  @default(now())
-  endTime   DateTime?
-  note      String?
-  tagId     String
-  todoId    String?
+  id            String    @id @default(cuid())
+  startTime     DateTime  @default(now())
+  endTime       DateTime?
+  note          String?
+  tagId         String
+  todoId        String?
+  pendingResume Boolean   @default(false)
+  dismissed     Boolean   @default(false)
+  dismissReason String?
+  resumedFromId String?
+  interruptedFromId String?
 
-  tag       Tag    @relation(fields: [tagId], references: [id], onDelete: Restrict)
-  todo      Todo?  @relation(fields: [todoId], references: [id], onDelete: SetNull)
-  memos     Memo[]
+  tag           Tag         @relation(fields: [tagId], references: [id], onDelete: Restrict)
+  todo          Todo?       @relation(fields: [todoId], references: [id], onDelete: SetNull)
+  memos         Memo[]
+  resumedFrom   TimeEntry?  @relation("ResumeChain", fields: [resumedFromId], references: [id], onDelete: SetNull)
+  resumes       TimeEntry[] @relation("ResumeChain")
+  interruptedFrom TimeEntry? @relation("InterruptChain", fields: [interruptedFromId], references: [id], onDelete: SetNull)
+  interrupts     TimeEntry[] @relation("InterruptChain")
 
   createdAt DateTime @default(now())
 
   @@index([tagId])
   @@index([startTime])
   @@index([todoId])
+  @@index([tagId, pendingResume])
+  @@index([resumedFromId])
+  @@index([interruptedFromId])
 }
 
 /// 待办事项：可关联分类，可关联时间记录

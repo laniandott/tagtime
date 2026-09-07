@@ -329,6 +329,232 @@ test('标签：未分类同名标签也应被拒绝，避免实体链接歧义',
   await prisma.tag.delete({ where: { id: tag.id } })
 })
 
+test('专注力回收：标签模式落库，混沌不可暂停，有序可续接', async () => {
+  const chaos = (await app.inject({
+    method: 'POST',
+    url: '/api/tags',
+    payload: { name: `混沌模式-${Date.now()}`, mode: 'chaos' },
+  })).json()
+  const orderedResponse = await app.inject({
+    method: 'POST',
+    url: '/api/tags',
+    payload: { name: `有序模式-${Date.now()}`, mode: 'ordered' },
+  })
+  assert.equal(orderedResponse.statusCode, 200)
+  const ordered = orderedResponse.json()
+  assert.equal(ordered.mode, 'ordered')
+
+  const chaosStart = (await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: chaos.id },
+  })).json()
+  const chaosStop = await app.inject({
+    method: 'POST',
+    url: `/api/timer/stop/${chaosStart.id}`,
+    payload: { pendingResume: true, note: '混沌不应进入暂存' },
+  })
+  assert.equal(chaosStop.statusCode, 200)
+  assert.equal(chaosStop.json().pendingResume, false)
+
+  const orderedStart = (await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: ordered.id },
+  })).json()
+  const missingNote = await app.inject({
+    method: 'POST',
+    url: `/api/timer/stop/${orderedStart.id}`,
+    payload: { pendingResume: true },
+  })
+  assert.equal(missingNote.statusCode, 400)
+
+  const paused = await app.inject({
+    method: 'POST',
+    url: `/api/timer/stop/${orderedStart.id}`,
+    payload: { pendingResume: true, note: '回来先打开上次的草稿' },
+  })
+  assert.equal(paused.statusCode, 200)
+  assert.equal(paused.json().pendingResume, true)
+
+  const pending = await app.inject({ method: 'GET', url: '/api/timer/pending' })
+  assert.equal(pending.statusCode, 200)
+  assert.equal(pending.json().pending.some((item: { id: string }) => item.id === orderedStart.id), true)
+
+  const resumed = await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: ordered.id, resumedFromId: orderedStart.id },
+  })
+  assert.equal(resumed.statusCode, 200)
+  assert.equal(resumed.json().note, '回来先打开上次的草稿')
+  assert.equal(resumed.json().resumedFromId, orderedStart.id)
+  assert.equal((await prisma.timeEntry.findUniqueOrThrow({ where: { id: orderedStart.id } })).pendingResume, false)
+
+  await prisma.timeEntry.deleteMany({ where: { tagId: { in: [chaos.id, ordered.id] } } })
+  await prisma.tag.deleteMany({ where: { id: { in: [chaos.id, ordered.id] } } })
+})
+
+test('专注力回收：算了必须有原因，并从统计中排除', async () => {
+  const tag = await prisma.tag.create({ data: { name: `算了校验-${Date.now()}`, mode: 'ordered' } })
+  const start = new Date(2026, 7, 30, 10, 0, 0)
+  const first = await prisma.timeEntry.create({
+    data: {
+      tagId: tag.id,
+      startTime: start,
+      endTime: new Date(2026, 7, 30, 10, 10, 0),
+      pendingResume: false,
+    },
+  })
+  await prisma.timeEntry.create({
+    data: {
+      tagId: tag.id,
+      startTime: new Date(2026, 7, 30, 10, 20, 0),
+      endTime: new Date(2026, 7, 30, 10, 30, 0),
+      resumedFromId: first.id,
+    },
+  })
+  const dismissed = await prisma.timeEntry.create({
+    data: {
+      tagId: tag.id,
+      startTime: new Date(2026, 7, 30, 11, 0, 0),
+      endTime: new Date(2026, 7, 30, 12, 0, 0),
+      pendingResume: true,
+    },
+  })
+
+  const emptyReason = await app.inject({
+    method: 'POST',
+    url: `/api/timer/${dismissed.id}/dismiss-pending`,
+    payload: { reason: '   ' },
+  })
+  assert.equal(emptyReason.statusCode, 400)
+
+  const dismissedResponse = await app.inject({
+    method: 'POST',
+    url: `/api/timer/${dismissed.id}/dismiss-pending`,
+    payload: { reason: '计划改了' },
+  })
+  assert.equal(dismissedResponse.statusCode, 200)
+  assert.equal(dismissedResponse.json().dismissed, true)
+  assert.match(dismissedResponse.json().note, /已丢弃：计划改了/)
+
+  const from = encodeURIComponent(new Date(2026, 7, 30, 0, 0, 0).toISOString())
+  const to = encodeURIComponent(new Date(2026, 7, 30, 23, 59, 59).toISOString())
+  const fragmentation = await app.inject({ method: 'GET', url: `/api/stats/fragmentation?from=${from}&to=${to}` })
+  assert.equal(fragmentation.statusCode, 200)
+  const stat = fragmentation.json().tags.find((item: { tagId: string }) => item.tagId === tag.id)
+  assert.equal(stat.focusedMs, 20 * 60 * 1000)
+  assert.equal(stat.spanMs, 30 * 60 * 1000)
+  assert.equal(stat.interruptCount, 1)
+
+  await prisma.timeEntry.deleteMany({ where: { tagId: tag.id } })
+  await prisma.tag.delete({ where: { id: tag.id } })
+})
+
+test('活动链路：暂停后接管、结束待续、终止链路和 Todo 绑定', async () => {
+  const tag = await prisma.tag.create({ data: { name: `链路活动-${Date.now()}`, mode: 'ordered' } })
+  const todo = await prisma.todo.create({ data: { title: `链路待办-${Date.now()}` } })
+
+  const first = await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: tag.id, todoId: todo.id },
+  })
+  assert.equal(first.statusCode, 200)
+  const firstEntry = first.json()
+  assert.equal(firstEntry.todoId, todo.id)
+
+  const clearedTodo = await app.inject({
+    method: 'PUT',
+    url: `/api/timer/${firstEntry.id}`,
+    payload: { todoId: null },
+  })
+  assert.equal(clearedTodo.statusCode, 200)
+  assert.equal(clearedTodo.json().todoId, null)
+  const reboundTodo = await app.inject({
+    method: 'PUT',
+    url: `/api/timer/${firstEntry.id}`,
+    payload: { todoId: todo.id },
+  })
+  assert.equal(reboundTodo.statusCode, 200)
+  assert.equal(reboundTodo.json().todoId, todo.id)
+
+  const firstPaused = await app.inject({
+    method: 'POST',
+    url: `/api/timer/stop/${firstEntry.id}`,
+    payload: { pendingResume: true, note: '回来先看这条待办' },
+  })
+  assert.equal(firstPaused.statusCode, 200)
+  assert.equal(firstPaused.json().pendingResume, true)
+
+  const second = await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: tag.id, interruptedFromId: firstEntry.id },
+  })
+  assert.equal(second.statusCode, 200)
+  const secondEntry = second.json()
+  assert.equal(secondEntry.interruptedFromId, firstEntry.id)
+  assert.equal(secondEntry.todoId, null, '接管新活动不应自动继承上一个活动的 Todo')
+
+  const conflictingChain = await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: tag.id, resumedFromId: firstEntry.id, interruptedFromId: firstEntry.id },
+  })
+  assert.equal(conflictingChain.statusCode, 400)
+
+  const secondPaused = await app.inject({
+    method: 'POST',
+    url: `/api/timer/stop/${secondEntry.id}`,
+    payload: { pendingResume: true, note: '第二段回来继续' },
+  })
+  assert.equal(secondPaused.statusCode, 200)
+
+  const finishedPending = await app.inject({
+    method: 'POST',
+    url: `/api/timer/${secondEntry.id}/finish-pending`,
+  })
+  assert.equal(finishedPending.statusCode, 200)
+  assert.equal(finishedPending.json().pendingResume, false)
+
+  const third = await app.inject({
+    method: 'POST',
+    url: '/api/timer/start',
+    payload: { tagId: tag.id, interruptedFromId: firstEntry.id },
+  })
+  assert.equal(third.statusCode, 200)
+  const thirdEntry = third.json()
+
+  const emptyReason = await app.inject({
+    method: 'POST',
+    url: `/api/timer/${thirdEntry.id}/terminate-chain`,
+    payload: { reason: '   ' },
+  })
+  assert.equal(emptyReason.statusCode, 400)
+
+  const terminated = await app.inject({
+    method: 'POST',
+    url: `/api/timer/${thirdEntry.id}/terminate-chain`,
+    payload: { reason: '需求取消，今天不再继续' },
+  })
+  assert.equal(terminated.statusCode, 200)
+  assert.equal(terminated.json().count, 2)
+
+  const firstAfterTerminate = await prisma.timeEntry.findUniqueOrThrow({ where: { id: firstEntry.id } })
+  const thirdAfterTerminate = await prisma.timeEntry.findUniqueOrThrow({ where: { id: thirdEntry.id } })
+  assert.equal(firstAfterTerminate.dismissed, true)
+  assert.equal(firstAfterTerminate.pendingResume, false)
+  assert.equal(thirdAfterTerminate.dismissed, true)
+  assert.ok(thirdAfterTerminate.endTime)
+  assert.equal(await prisma.timeEntry.count({ where: { id: { in: [firstEntry.id, secondEntry.id, thirdEntry.id] } } }), 3)
+
+  await prisma.timeEntry.deleteMany({ where: { id: { in: [firstEntry.id, secondEntry.id, thirdEntry.id] } } })
+  await prisma.todo.delete({ where: { id: todo.id } })
+  await prisma.tag.delete({ where: { id: tag.id } })
+})
+
 test('更新分类/标签发生唯一键冲突时返回 409，而不是误报不存在', async () => {
   const categoryA = await prisma.category.create({ data: { name: `冲突分类A-${Date.now()}` } })
   const categoryB = await prisma.category.create({ data: { name: `冲突分类B-${Date.now()}` } })

@@ -9,7 +9,7 @@
   "plugins": {
     "StatusBar": {
       "overlaysWebView": false,
-      "style": "DARK",
+      "style": "DEFAULT",
       "backgroundColor": "#f9fafb"
     },
     "LocalNotifications": {

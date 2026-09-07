@@ -63,6 +63,7 @@ export default async function goalRoutes(app: FastifyInstance) {
     const allEntries = await prisma.timeEntry.findMany({
       where: {
         tagId: { in: tagIds },
+        dismissed: false,
         startTime: { lte: now },
         OR: [{ endTime: { gte: earliest } }, { endTime: null }],
       },

@@ -17,7 +17,7 @@
 //           覆盖前自动生成独立的「恢复前备份」；恢复走事务式替换，任一步失败即回滚到替换前状态。
 import { createHash } from 'node:crypto'
 import { createReadStream, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 
@@ -29,7 +29,17 @@ const DATA_DIR = process.env.DATA_DIR
     ? '/data'
     : resolve(CWD, 'data')
 const UPLOAD_DIR = join(DATA_DIR, 'uploads')
-const NOTES_DIR = process.env.NOTES_DIR ? resolve(process.env.NOTES_DIR) : join(DATA_DIR, 'notes')
+const persistedNotesDir = (() => {
+  if (process.env.NOTES_DIR) return null
+  try {
+    const configured = JSON.parse(readFileSync(join(DATA_DIR, 'notes-config.json'), 'utf8')).notesDir
+    if (typeof configured !== 'string' || !isAbsolute(configured) || !statSync(configured).isDirectory()) return null
+    return resolve(configured)
+  } catch {
+    return null
+  }
+})()
+const NOTES_DIR = process.env.NOTES_DIR ? resolve(process.env.NOTES_DIR) : persistedNotesDir ?? join(DATA_DIR, 'notes')
 const PORT = Number(process.env.PORT ?? 3000)
 
 function parseDbPath(urlStr) {

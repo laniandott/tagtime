@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { api, resolveUploadUrl } from '../api'
 import { formatDuration, toIsoSafe, useStore } from '../store'
 import type { Memo } from '../types'
@@ -21,7 +20,6 @@ export default function DiaryPanel() {
   const [filterCat, setFilterCat] = useState('')
   const [error, setError] = useState('')
   const loadSequence = useRef(0)
-  const navigate = useNavigate()
 
   const loadMemos = useCallback(async () => {
     const sequence = ++loadSequence.current
@@ -260,7 +258,6 @@ export default function DiaryPanel() {
             setEditingMemo(null)
             loadMemos()
           }}
-          onOpenNote={(id) => navigate(`/notes/${id}`)}
         />
       )}
 

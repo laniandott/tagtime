@@ -4,7 +4,6 @@ const navItems = [
   { to: '/', label: '计时', icon: '⏱' },
   { to: '/todos', label: '待办', icon: '✓' },
   { to: '/calendar', label: '日历', icon: '📅' },
-  { to: '/notes', label: '笔记', icon: '📝' },
   { to: '/stats', label: '统计', icon: '📊' },
   { to: '/tags', label: '标签', icon: '🏷' },
 ]

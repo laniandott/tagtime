@@ -6,15 +6,22 @@ interface AppState {
   categories: Category[]
   tags: Tag[]
   running: TimeEntry[]
+  pending: TimeEntry[]
   clockOffset: number // 浏览器时钟 - 服务器时钟（毫秒），用于修正容器时钟偏差
   loading: boolean
   // 加载基础数据
   loadAll: () => Promise<void>
   loadRunning: () => Promise<void>
+  loadPending: () => Promise<void>
   // 计时操作
-  start: (tagId: string, note?: string, todoId?: string) => Promise<void>
-  stop: (id: string, note?: string) => Promise<void>
+  start: (tagId: string, note?: string, todoId?: string, interruptedFromId?: string) => Promise<void>
+  stop: (id: string, note?: string, pendingResume?: boolean) => Promise<TimeEntry>
   stopAll: () => Promise<void>
+  // 续接操作
+  resumeEntry: (pendingId: string, note?: string) => Promise<void>
+  dismissPending: (id: string, reason: string) => Promise<void>
+  finishPending: (id: string) => Promise<void>
+  terminateChain: (id: string, reason: string) => Promise<{ count: number }>
   // 次数型打卡
   quickCount: (tagId: string, note?: string, todoId?: string) => Promise<void>
 }
@@ -85,6 +92,7 @@ export const useStore = create<AppState>((set, get) => ({
   categories: [],
   tags: [],
   running: [],
+  pending: [],
   clockOffset: 0,
   loading: false,
 
@@ -93,10 +101,11 @@ export const useStore = create<AppState>((set, get) => ({
     const runningSequenceAtStart = runningRequestSequence
     set({ loading: true })
     try {
-      const [categoriesResult, tagsResult, timerResult] = await Promise.allSettled([
+      const [categoriesResult, tagsResult, timerResult, pendingResult] = await Promise.allSettled([
         api.categories.list(),
         api.tags.list(),
         api.timer.current(),
+        api.timer.pending(),
       ])
       // 仅取消更早的 loadAll；loadRunning 的刷新不应让全局 loading 永久卡住。
       if (requestSequence !== loadAllRequestSequence) return
@@ -109,14 +118,16 @@ export const useStore = create<AppState>((set, get) => ({
         ? tagsResult.value
         : current.tags
       const timerData = timerResult.status === 'fulfilled' ? timerResult.value : null
+      const pendingData = pendingResult.status === 'fulfilled' ? pendingResult.value : null
       // 若期间已有更晚的 loadRunning，保留它的结果，避免旧的 loadAll 覆盖新计时状态。
       const runningList = runningSequenceAtStart === runningRequestSequence && timerData && Array.isArray(timerData.running)
         ? timerData.running
         : current.running
+      const pendingList = pendingData && Array.isArray(pendingData.pending) ? pendingData.pending : current.pending
       const serverMs = timerData?.serverTime ? new Date(timerData.serverTime).getTime() : NaN
       const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
 
-      set({ categories: categoriesList, tags: tagsList, running: runningList, clockOffset, loading: false })
+      set({ categories: categoriesList, tags: tagsList, running: runningList, pending: pendingList, clockOffset, loading: false })
       syncNativeNotification(runningList)
     } catch (e) {
       console.error('loadAll error:', e)
@@ -140,28 +151,75 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  start: async (tagId, note, todoId) => {
-    const res = await api.timer.start({ tagId, note, todoId })
+  loadPending: async () => {
+    try {
+      const data = await api.timer.pending()
+      const pendingList = Array.isArray(data?.pending) ? data.pending : []
+      set({ pending: pendingList })
+    } catch (e) {
+      console.error('loadPending error:', e)
+    }
+  },
+
+  start: async (tagId, note, todoId, interruptedFromId) => {
+    const res = await api.timer.start({ tagId, note, todoId, interruptedFromId })
     const { serverTime, ...entry } = res
     const clockOffset = Date.now() - new Date(serverTime).getTime()
     const newRunning = [...get().running, entry]
     set({ running: newRunning, clockOffset })
     syncNativeNotification(newRunning)
+    await get().loadPending()
   },
 
-  stop: async (id, note) => {
-    await api.timer.stop(id, note)
+  stop: async (id, note, pendingResume) => {
+    const stopped = await api.timer.stop(id, note, pendingResume)
     const newRunning = get().running.filter((e) => e.id !== id)
     set({ running: newRunning })
     syncNativeNotification(newRunning)
+    await get().loadPending()
     await get().loadAll()
+    return stopped
   },
 
   stopAll: async () => {
     await api.timer.stopAll()
     set({ running: [] })
     syncNativeNotification([])
+    await get().loadPending()
     await get().loadAll()
+  },
+
+  resumeEntry: async (pendingId, note) => {
+    const pendingEntry = get().pending.find(e => e.id === pendingId)
+    if (!pendingEntry) throw new Error('待续记录不存在')
+    const res = await api.timer.start({
+      tagId: pendingEntry.tagId,
+      note: note ?? pendingEntry.note ?? undefined,
+      todoId: pendingEntry.todoId ?? undefined,
+      resumedFromId: pendingId,
+    })
+    const { serverTime, ...entry } = res
+    const clockOffset = Date.now() - new Date(serverTime).getTime()
+    const newRunning = [...get().running, entry]
+    set({ running: newRunning, clockOffset })
+    syncNativeNotification(newRunning)
+    await get().loadPending()
+  },
+
+  dismissPending: async (id, reason) => {
+    await api.timer.dismissPending(id, reason)
+    await get().loadPending()
+  },
+
+  finishPending: async (id) => {
+    await api.timer.finishPending(id)
+    await get().loadPending()
+  },
+
+  terminateChain: async (id, reason) => {
+    const result = await api.timer.terminateChain(id, reason)
+    await get().loadAll()
+    return result
   },
 
   quickCount: async (tagId, note, todoId) => {

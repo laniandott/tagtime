@@ -7,7 +7,7 @@
 备份会完整复制以下持久化用户数据：
 
 - **SQLite 数据库**：`DATABASE_URL` 指向的 `.db` 主库文件，以及共存时的 `-wal` / `-shm` 附属文件；
-- **笔记 Markdown**：`NOTES_DIR`（默认 `DATA_DIR/notes`）下的全部 `.md`；
+- **笔记 Markdown**：活动文件库下的全部 `.md`；文件库按 `NOTES_DIR` 环境变量 > `DATA_DIR/notes-config.json` > `DATA_DIR/notes` 解析；
 - **上传附件**：`UPLOAD_DIR`（即 `DATA_DIR/uploads`）下的全部附件。
 
 > 若 `DATABASE_URL` 位于 `DATA_DIR` 之外，仍按 URL 读取并如实在 manifest 中记录，请留意备份后需连同该库位置一起迁移。
@@ -23,9 +23,11 @@
 | 变量 | 说明 | 默认 |
 |------|------|------|
 | `DATA_DIR` | 数据根目录（含 `uploads/`） | `/data` 或工作目录下 `data` |
-| `NOTES_DIR` | 笔记目录 | `DATA_DIR/notes` |
+| `NOTES_DIR` | 固定笔记目录（设置后网页不能切换） | 优先级最高 |
 | `DATABASE_URL` | Prisma 数据库 URL（`file:` 或绝对路径） | `DATA_DIR/tagtime.db` |
 | `PORT` | 服务端端口（用于检测服务是否在运行） | `3000` |
+
+未设置 `NOTES_DIR` 时，可在网页的“笔记库 → 设置文件库”中填写本机 Obsidian Vault 路径；路径会保存到 `DATA_DIR/notes-config.json`。切换只重建索引，不会移动或删除 Markdown 文件。
 
 ## 3. 备份
 

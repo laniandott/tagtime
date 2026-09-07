@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
 
 const TAG_TYPES = new Set(['time', 'count'])
+const TAG_MODES = new Set(['chaos', 'ordered'])
 const MAX_NAME_LENGTH = 100
 const MAX_ICON_LENGTH = 32
 
@@ -35,19 +36,22 @@ export default async function tagRoutes(app: FastifyInstance) {
 
   // 创建标签
   app.post('/', async (req, reply) => {
-    const { name, color, icon, categoryId, sortOrder, trackType } = (req.body ?? {}) as {
+    const { name, color, icon, categoryId, sortOrder, trackType, mode } = (req.body ?? {}) as {
       name: string
       color?: string
       icon?: string
       categoryId?: string
       sortOrder?: number
       trackType?: string
+      mode?: string
     }
     if (typeof name !== 'string' || !name.trim() || name.length > MAX_NAME_LENGTH) {
       return reply.code(400).send({ error: `名称不能为空且不能超过 ${MAX_NAME_LENGTH} 个字符` })
     }
     const nextTrackType = trackType ?? 'time'
     if (!TAG_TYPES.has(nextTrackType)) return reply.code(400).send({ error: 'trackType 只能是 time 或 count' })
+    const nextMode = mode ?? 'chaos'
+    if (!TAG_MODES.has(nextMode)) return reply.code(400).send({ error: 'mode 只能是 chaos 或 ordered' })
     if (categoryId !== undefined && categoryId !== null && typeof categoryId !== 'string') {
       return reply.code(400).send({ error: 'categoryId 无效' })
     }
@@ -74,7 +78,7 @@ export default async function tagRoutes(app: FastifyInstance) {
       return await prisma.tag.create({
         data: {
           name: name.trim(), color: safeColor ?? undefined, icon: safeIcon,
-          categoryId: categoryId || null, sortOrder: safeSortOrder, trackType: nextTrackType,
+          categoryId: categoryId || null, sortOrder: safeSortOrder, trackType: nextTrackType, mode: nextMode,
         },
         include: { category: true },
       })
@@ -87,19 +91,23 @@ export default async function tagRoutes(app: FastifyInstance) {
   // 更新标签
   app.put('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { name, color, icon, categoryId, sortOrder, trackType } = (req.body ?? {}) as {
+    const { name, color, icon, categoryId, sortOrder, trackType, mode } = (req.body ?? {}) as {
       name?: string
       color?: string
       icon?: string
       categoryId?: string | null
       sortOrder?: number
       trackType?: string
+      mode?: string
     }
     if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > MAX_NAME_LENGTH)) {
       return reply.code(400).send({ error: `名称不能为空且不能超过 ${MAX_NAME_LENGTH} 个字符` })
     }
     if (trackType !== undefined && !TAG_TYPES.has(trackType)) {
       return reply.code(400).send({ error: 'trackType 只能是 time 或 count' })
+    }
+    if (mode !== undefined && !TAG_MODES.has(mode)) {
+      return reply.code(400).send({ error: 'mode 只能是 chaos 或 ordered' })
     }
     if (categoryId !== undefined && categoryId !== null && typeof categoryId !== 'string') {
       return reply.code(400).send({ error: 'categoryId 无效' })
@@ -143,6 +151,7 @@ export default async function tagRoutes(app: FastifyInstance) {
           ...(categoryId !== undefined ? { categoryId } : {}),
           ...(sortOrder !== undefined ? { sortOrder: safeSortOrder } : {}),
           ...(trackType !== undefined ? { trackType } : {}),
+          ...(mode !== undefined ? { mode } : {}),
         },
         include: { category: true },
       })

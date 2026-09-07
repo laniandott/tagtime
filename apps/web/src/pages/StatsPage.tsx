@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore, formatDuration } from '../store'
-import type { Summary, DailyStat, TagStat, Goal } from '../types'
+import type { Summary, DailyStat, TagStat, Goal, FragmentationStat } from '../types'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -10,11 +10,12 @@ import {
 const MS_TO_HOUR = (ms: number) => Number((ms / 3600000).toFixed(2))
 
 export default function StatsPage() {
-  const { categories } = useStore()
+  const { categories, tags } = useStore()
   const [summary, setSummary] = useState<Summary | null>(null)
   const [daily, setDaily] = useState<DailyStat[]>([])
   const [byTag, setByTag] = useState<TagStat[]>([])
   const [goals, setGoals] = useState<Goal[]>([])
+  const [fragmentation, setFragmentation] = useState<FragmentationStat[]>([])
   // 时间范围：预设天数 或 'custom' 自定义区间
   const [range, setRange] = useState<7 | 14 | 30 | 'custom'>(7)
   const [customFrom, setCustomFrom] = useState('')
@@ -52,6 +53,7 @@ export default function StatsPage() {
       if (!customFrom || !customTo) {
         setDaily([])
         setByTag([])
+        setFragmentation([])
         return
       }
       const fromIso = new Date(customFrom + 'T00:00:00').toISOString()
@@ -59,11 +61,13 @@ export default function StatsPage() {
       Promise.all([
         api.stats.daily({ from: fromIso, to: toIso, categoryId: filterCat || undefined }),
         api.stats.byTag(fromIso, toIso, filterCat || undefined),
+        api.stats.fragmentation(fromIso, toIso),
       ])
-        .then(([nextDaily, nextByTag]) => {
+        .then(([nextDaily, nextByTag, nextFrag]) => {
           if (sequence !== trendRequest.current) return
           setDaily(nextDaily)
           setByTag(nextByTag)
+          setFragmentation(nextFrag.tags)
         })
         .catch((err) => {
           if (sequence === trendRequest.current) {
@@ -78,11 +82,13 @@ export default function StatsPage() {
       Promise.all([
         api.stats.daily({ days: range, categoryId: filterCat || undefined }),
         api.stats.byTag(from.toISOString(), now.toISOString(), filterCat || undefined),
+        api.stats.fragmentation(from.toISOString(), now.toISOString()),
       ])
-        .then(([nextDaily, nextByTag]) => {
+        .then(([nextDaily, nextByTag, nextFrag]) => {
           if (sequence !== trendRequest.current) return
           setDaily(nextDaily)
           setByTag(nextByTag)
+          setFragmentation(nextFrag.tags)
         })
         .catch((err) => {
           if (sequence === trendRequest.current) {
@@ -290,6 +296,45 @@ export default function StatsPage() {
                   </div>
                   <span className="text-xs text-gray-400 font-mono w-20 text-right">
                     {formatDuration(t.ms)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 碎片化指数 */}
+      <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
+        <h2 className="text-sm font-semibold text-gray-500 mb-3">
+          碎片化指数（{range === 'custom' ? `${customFrom || '?'} ~ ${customTo || '?'}` : `近 ${range} 天`}）
+        </h2>
+        <div className="text-xs text-gray-400 mb-3">
+          专注占位比率越高，表示这段时间越完整；同时显示被打断次数。
+        </div>
+        {fragmentation.length === 0 ? (
+          <Empty />
+        ) : (
+          <div className="space-y-2">
+            {fragmentation.slice(0, 12).map((f) => {
+              const ratioPercent = Math.max(0, Math.min(100, f.ratio * 100))
+              const color = f.ratio >= 0.7 ? '#10b981' : f.ratio >= 0.4 ? '#f59e0b' : '#ef4444'
+              const tagColor = tags.find((tag) => tag.id === f.tagId)?.color ?? '#6d5efc'
+              return (
+                <div key={f.tagId} className="flex items-center gap-3">
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: tagColor }} />
+                  <span className="text-sm w-20 truncate">{f.tagName}</span>
+                  <div className="flex-1 h-5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{ width: `${ratioPercent}%`, background: color }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono w-16 text-right" style={{ color }}>
+                    {ratioPercent.toFixed(0)}%
+                  </span>
+                  <span className="text-xs text-gray-400 w-40 text-right">
+                    {formatDuration(f.focusedMs)} / {formatDuration(f.spanMs)} · {f.interruptCount} 次打断
                   </span>
                 </div>
               )

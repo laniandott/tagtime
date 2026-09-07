@@ -3,7 +3,7 @@ import type { Text, EditorState, Extension, SelectionRange } from '@codemirror/s
 import { Decoration, DecorationSet, EditorView } from '@codemirror/view'
 import { parseMarkdown, type Token } from './markdownTokens'
 import { activeLineNumbers, tokensToRender } from './livePreview'
-import { MathWidget, ImageWidget, SymbolWidget, TableWidget, TaskWidget, CodeBlockWidget, type CodeLineSourceRange } from './markdownWidgets'
+import { MathWidget, ImageWidget, SymbolWidget, HorizontalRuleWidget, TableWidget, TaskWidget, CodeBlockWidget, type CodeLineSourceRange } from './markdownWidgets'
 
 // 单个待添加的装饰区间；先收集再按 (from, startSide) 全局排序，
 // 避免重叠 token（例如 *斜体* 内部又嵌套 **粗体**）导致插入乱序而抛错。
@@ -71,7 +71,7 @@ function apply(t: Token, doc: Text, out: DecoEntry[]): void {
     case 'hr': {
       const ln = lineAt(t.from)
       add(ln.from, ln.from, Decoration.line({ class: 'cm-hr' }))
-      if (t.to > t.from) add(t.from, t.to, Decoration.replace({}))
+      if (t.to > t.from) add(t.from, t.to, Decoration.replace({ widget: new HorizontalRuleWidget(t.from, t.to) }))
       break
     }
     case 'fence': {
@@ -141,6 +141,28 @@ function buildDecorations(doc: Text, ranges: readonly SelectionRange[], tokens: 
   return b.finish()
 }
 
+function lineSourcePositionAtPoint(event: MouseEvent, view: EditorView): number | null {
+  const target = event.target instanceof Element ? event.target : null
+  const lineElement = target?.closest<HTMLElement>('.cm-line')
+  if (!lineElement || !view.contentDOM.contains(lineElement)) return null
+  if (target?.closest('.cm-task-marker')) return null
+
+  const rect = lineElement.getBoundingClientRect()
+  const block = view.lineBlockAtHeight(event.clientY - view.documentTop)
+  const line = view.state.doc.lineAt(block.from)
+  try {
+    // posAtCoords 会把被 Decoration.replace 隐藏的 Markdown 标记当成零宽，
+    // 因此只取它相对当前 DOM 行起点的偏移，再加回真实源码行起点。
+    const domLineStart = view.posAtDOM(lineElement, 0)
+    const domPoint = view.posAtCoords({ x: event.clientX, y: event.clientY }, false)
+    const delta = domPoint - domLineStart
+    return Math.min(line.to, Math.max(line.from, line.from + delta))
+  } catch {
+    const ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0
+    return line.from + Math.round(line.length * ratio)
+  }
+}
+
 // 块级装饰（如 $$ 展示公式的 block widget、列表/标题/引用 / 代码块等）必须经由
 // StateField 提供，ViewPlugin 的 decorations 只允许行内装饰，否则会抛
 // “Block decorations may not be specified via plugins”。这里用 StateField 承载整套
@@ -172,4 +194,17 @@ export const livePreviewField = StateField.define<LivePreviewState>({
   provide: (f) => EditorView.decorations.from(f, (value) => value.decorations),
 })
 
-export const livePreviewPlugin: Extension = [livePreviewField]
+export const livePreviewPlugin: Extension = [
+  livePreviewField,
+  EditorView.domEventHandlers({
+    mousedown(event, view) {
+      if (event.button !== 0) return false
+      const position = lineSourcePositionAtPoint(event, view)
+      if (position === null) return false
+      event.preventDefault()
+      view.dispatch({ selection: { anchor: position }, scrollIntoView: true })
+      view.focus()
+      return true
+    },
+  }),
+]

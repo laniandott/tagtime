@@ -16,6 +16,7 @@ export interface Tag {
   icon: string | null
   categoryId: string | null
   trackType: 'time' | 'count'
+  mode: 'chaos' | 'ordered'
   sortOrder: number
   category?: Category | null
 }
@@ -50,9 +51,16 @@ export interface TimeEntry {
   note: string | null
   tagId: string
   todoId: string | null
+  pendingResume: boolean
+  dismissed: boolean
+  dismissReason: string | null
+  resumedFromId: string | null
+  interruptedFromId: string | null
   tag?: Tag | null
   todo?: Todo | null
   memos?: Memo[]
+  chainLength?: number
+  totalFocusedMs?: number
 }
 
 export interface Todo {
@@ -88,6 +96,15 @@ export interface TagStat {
   color: string
   category: string | null
   ms: number
+}
+
+export interface FragmentationStat {
+  tagId: string
+  tagName: string
+  focusedMs: number
+  spanMs: number
+  ratio: number
+  interruptCount: number
 }
 
 export interface Goal {
@@ -167,6 +184,12 @@ export interface NoteDetail {
   content: string
   outLinks: NoteOutLink[]
   inLinks: NoteInLink[]
+}
+
+export interface NoteVault {
+  path: string
+  source: 'environment' | 'config'
+  noteCount: number
 }
 
 export interface NoteAutocompleteEntry {

@@ -1,16 +1,14 @@
 import React, { lazy, Suspense, useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Navigate, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import { useStore } from './store'
+import { syncNativeStatusBarTheme } from './nativeStatusBar'
 
 const TimerPage = lazy(() => import('./pages/TimerPage'))
 const TodosPage = lazy(() => import('./pages/TodosPage'))
 const StatsPage = lazy(() => import('./pages/StatsPage'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
 const CalendarPage = lazy(() => import('./pages/CalendarPage'))
-const NotesPage = lazy(() => import('./pages/NotesPage'))
-const NoteEditorPage = lazy(() => import('./pages/NoteEditorPage'))
-const NotesGraphPage = lazy(() => import('./pages/NotesGraphPage'))
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
   constructor(props: any) {
@@ -65,6 +63,20 @@ export default function App() {
   const loadAll = useStore((s) => s.loadAll)
 
   useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const applyTheme = () => {
+      const isDark = media.matches
+      document.documentElement.classList.toggle('dark', isDark)
+      document.documentElement.style.colorScheme = isDark ? 'dark' : 'light'
+      void syncNativeStatusBarTheme(isDark)
+    }
+
+    applyTheme()
+    media.addEventListener('change', applyTheme)
+    return () => media.removeEventListener('change', applyTheme)
+  }, [])
+
+  useEffect(() => {
     loadAll()
   }, [loadAll])
 
@@ -78,10 +90,8 @@ export default function App() {
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/stats" element={<StatsPage />} />
             <Route path="/tags" element={<TagsPage />} />
-            <Route path="/notes" element={<NotesPage />} />
-            <Route path="/notes/graph" element={<NotesGraphPage />} />
-            <Route path="/notes/:id" element={<NoteEditorPage />} />
-            <Route path="/notes/:id/graph" element={<NotesGraphPage />} />
+            {/* 旧版笔记链接平滑回到计时页，避免历史书签落到空白页。 */}
+            <Route path="/notes/*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </Layout>

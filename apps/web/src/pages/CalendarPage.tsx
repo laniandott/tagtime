@@ -233,7 +233,6 @@ export default function CalendarPage() {
       .then((notes) => { if (sequence === dayNotesRequest.current) setDayLinkedNotes(notes) })
       .catch(() => { if (sequence === dayNotesRequest.current) setDayLinkedNotes([]) })
   }, [view, currentDate])
-
   // 每分钟更新当前时间（用于"现在"指示线）
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60000)
@@ -755,7 +754,7 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
                   left: `calc(${leftPercent}% + 2px)`,
                   width: `calc(${widthPercent}% - 4px)`,
                   backgroundColor: `${color}15`,
-                  borderLeft: `3px solid ${color}`,
+                  borderLeft: entry.dismissed ? '2px solid rgb(156 163 175)' : entry.resumedFromId ? `2px solid ${color}` : `3px solid ${color}`,
                 }}
               >
                 <div className="px-2 py-0.5 text-xs font-semibold truncate" style={{ color }}>
@@ -962,7 +961,7 @@ function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents
                       left: `calc(${leftPercent}% + 1px)`,
                       width: `calc(${widthPercent}% - 2px)`,
                       backgroundColor: `${color}15`,
-                      borderLeft: `2.5px solid ${color}`,
+                      borderLeft: entry.dismissed ? '2px solid rgb(156 163 175)' : entry.resumedFromId ? `2px solid ${color}` : `2.5px solid ${color}`,
                     }}
                   >
                     {height > 18 && (

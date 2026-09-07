@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { marked } from 'marked'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
-import DOMPurify from 'dompurify'
 import { api, ApiError } from '../api'
 import { useNotesSocket, type NoteEvent } from '../hooks/useNotesSocket'
 import type { NoteDetail, RelatedEntities, EntityLinkType } from '../types'
@@ -13,54 +10,9 @@ import MarkdownEditor, {
   insertTextAtCursor as cmInsertText,
 } from '../editor/MarkdownEditor'
 import type { EditorView } from '@codemirror/view'
-import { codeRanges } from '../editor/codeRanges'
-import { createUniquePlaceholder } from '../editor/placeholders'
+import { renderMarkdown } from '../editor/markdownPreview'
 
 type Mode = 'live' | 'edit' | 'split' | 'preview'
-
-function normalizeMathExpression(expression: string): string {
-  // 用户笔记里常用 Markdown 的转义下划线（\\_），在 LaTeX 中应还原为下标符号。
-  return expression.replace(/\\_/g, '_').trim()
-}
-
-function isInsideRange(position: number, ranges: Array<[number, number]>): boolean {
-  return ranges.some(([start, end]) => position >= start && position < end)
-}
-
-function renderMarkdown(content: string): string {
-  const source = content || ''
-  const ranges = codeRanges(source)
-  const mathTokens: Array<{ token: string; html: string; display: boolean }> = []
-  const usedPlaceholders = new Set<string>()
-  const mathPattern = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^\n$]+?\$/g
-  const markdown = source.replace(mathPattern, (full, offset: number) => {
-    if (isInsideRange(offset, ranges)) return full
-    const display = full.startsWith('$$') || full.startsWith('\\[')
-    const expression = display
-      ? full.startsWith('$$')
-        ? full.slice(2, -2)
-        : full.slice(2, -2)
-      : full.startsWith('\\(')
-        ? full.slice(2, -2)
-        : full.slice(1, -1)
-    const token = createUniquePlaceholder('TAGTIMEMATH', source, usedPlaceholders)
-    const html = katex.renderToString(normalizeMathExpression(expression), {
-      displayMode: display,
-      throwOnError: false,
-      strict: 'ignore',
-      trust: false,
-    })
-    mathTokens.push({ token, html, display })
-    return token
-  })
-  let html = marked.parse(markdown, { async: false, breaks: true }) as string
-  for (const { token, html: mathHtml, display } of mathTokens) {
-    const paragraph = new RegExp(`<p>\\s*${token}\\s*</p>`, 'g')
-    html = html.replace(paragraph, display ? mathHtml : `<span class="math-inline">${mathHtml}</span>`)
-    html = html.replaceAll(token, display ? mathHtml : `<span class="math-inline">${mathHtml}</span>`)
-  }
-  return DOMPurify.sanitize(html)
-}
 
 function folderFromPath(path: string): string {
   const index = path.lastIndexOf('/')
@@ -295,6 +247,10 @@ export default function NoteEditorPage() {
   // WebSocket 实时事件
   const handleWs = (ev: NoteEvent) => {
     const cur = stateRef.current
+    if (ev.type === 'notes.reindexed') {
+      if (cur.id && !localMutationRef.current && !cur.dirty) void load()
+      return
+    }
     if (ev.type === 'note.deleted' && ev.id === cur.id) {
       navigate('/notes')
       return

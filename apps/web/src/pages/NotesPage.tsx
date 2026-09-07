@@ -13,7 +13,7 @@ function folderName(path: string): string {
   return path.split('/').pop() || '根目录'
 }
 
-interface NoteFolderNode {
+export interface NoteFolderNode {
   path: string
   name: string
   children: NoteFolderNode[]

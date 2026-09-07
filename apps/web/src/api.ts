@@ -6,12 +6,14 @@ import type {
   Summary,
   DailyStat,
   TagStat,
+  FragmentationStat,
   Goal,
   Memo,
   CalendarSubscription,
   CalendarEvent,
   NoteListEntry,
   NoteDetail,
+  NoteVault,
   NoteAutocompleteEntry,
   GraphData,
   RelatedEntities,
@@ -230,10 +232,10 @@ export const api = {
   },
   timer: {
     current: () => req<{ running: TimeEntry[]; serverTime: string }>('/timer/current'),
-    start: (data: { tagId: string; note?: string; todoId?: string }) =>
+    start: (data: { tagId: string; note?: string; todoId?: string; resumedFromId?: string; interruptedFromId?: string }) =>
       req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify(data) }),
-    stop: (id: string, note?: string) =>
-      req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note }) }),
+    stop: (id: string, note?: string, pendingResume?: boolean) =>
+      req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note, pendingResume }) }),
     stopAll: () => req<{ count: number }>('/timer/stop', { method: 'POST' }),
     quick: (data: { tagId: string; note?: string; todoId?: string }) =>
       req<TimeEntry & { serverTime: string }>('/timer/quick', { method: 'POST', body: JSON.stringify(data) }),
@@ -244,10 +246,17 @@ export const api = {
       if (params?.tagId) q.set('tagId', params.tagId)
       return req<TimeEntry[]>(`/timer?${q}`)
     },
+    pending: () => req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending'),
+    dismissPending: (id: string, reason: string) =>
+      req<TimeEntry>(`/timer/${id}/dismiss-pending`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    finishPending: (id: string) =>
+      req<TimeEntry>(`/timer/${id}/finish-pending`, { method: 'POST' }),
+    terminateChain: (id: string, reason: string) =>
+      req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) }),
     remove: (id: string) => req(`/timer/${id}`, { method: 'DELETE' }),
     manual: (data: { tagId: string; startTime: string; endTime: string; note?: string; todoId?: string }) =>
       req<TimeEntry>('/timer/manual', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { startTime?: string; endTime?: string | null; note?: string; tagId?: string }) =>
+    update: (id: string, data: { startTime?: string; endTime?: string | null; note?: string; tagId?: string; todoId?: string | null }) =>
       req<TimeEntry>(`/timer/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   },
   todos: {
@@ -285,6 +294,13 @@ export const api = {
       if (categoryId) q.set('categoryId', categoryId)
       const qs = q.toString()
       return req<TagStat[]>(`/stats/by-tag${qs ? `?${qs}` : ''}`)
+    },
+    fragmentation: (from?: string, to?: string) => {
+      const q = new URLSearchParams()
+      if (from) q.set('from', from)
+      if (to) q.set('to', to)
+      const qs = q.toString()
+      return req<{ tags: FragmentationStat[] }>(`/stats/fragmentation${qs ? `?${qs}` : ''}`)
     },
   },
   goals: {
@@ -372,6 +388,9 @@ export const api = {
     },
   },
   notes: {
+    vault: () => req<NoteVault>('/notes/vault'),
+    setVault: (path: string) =>
+      req<NoteVault>('/notes/vault', { method: 'POST', body: JSON.stringify({ path }) }),
     list: (q?: string) => {
       const qs = q ? `?q=${encodeURIComponent(q)}` : ''
       return req<NoteListEntry[]>(`/notes${qs}`)

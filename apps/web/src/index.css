@@ -5,6 +5,11 @@
 :root {
   font-family: -apple-system, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
   -webkit-font-smoothing: antialiased;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 body {
@@ -114,6 +119,52 @@ body.fullscreen-clock-active header {
   padding: 0.25em 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+/* Atomic Editor live-preview bridge: keep its CM6 surface inside the Vault card. */
+.vault-page .atomic-cm-editor {
+  --atomic-editor-fg: rgb(31 41 55);
+  --atomic-editor-fg-muted: rgb(107 114 128);
+  --atomic-editor-fg-faint: rgb(156 163 175);
+  --atomic-editor-bg: transparent;
+  --atomic-editor-bg-panel: transparent;
+  --atomic-editor-bg-surface: rgb(249 250 251);
+  --atomic-editor-border: rgb(229 231 235);
+  --atomic-editor-accent: #6d5efc;
+  --atomic-editor-accent-bright: #8b7cf6;
+  --atomic-editor-accent-soft: #c4b5fd;
+  --atomic-editor-link: #6d5efc;
+  --atomic-editor-link-hover: #5748e8;
+  --atomic-editor-code-bg: rgb(249 250 251);
+  background: transparent;
+}
+.vault-page .atomic-cm-editor .cm-editor,
+.vault-page .atomic-cm-editor .cm-scroller {
+  min-height: 55vh;
+  background: transparent;
+}
+.vault-page .atomic-cm-editor .cm-scroller {
+  overflow: auto;
+}
+.dark .vault-page .atomic-cm-editor {
+  --atomic-editor-fg: rgb(243 244 246);
+  --atomic-editor-fg-muted: rgb(156 163 175);
+  --atomic-editor-fg-faint: rgb(107 114 128);
+  --atomic-editor-bg-surface: rgb(31 41 55);
+  --atomic-editor-border: rgb(55 65 81);
+  --atomic-editor-accent-soft: #8b7cf6;
+  --atomic-editor-code-bg: rgb(17 24 39);
+}
+.tagtime-atomic-math {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+}
+.tagtime-atomic-math-display {
+  display: block;
+  padding: 0.25em 0;
+  text-align: center;
 }
 
 /* ══════════════ CodeMirror 6 Markdown Live Preview ══════════════ */
@@ -272,9 +323,18 @@ body.fullscreen-clock-active header {
   display: block;
 }
 
-/* 分隔线（被替换后仅保留占位） */
+/* 分隔线：保留可点击的源码定位锚点 */
 .tagtime-editor .cm-line.cm-hr {
-  border-top: 1px solid rgb(229 231 235);
-  margin: 0.9em 0;
+  margin: 0;
+  padding: 0;
+  min-height: 1px;
 }
-.dark .tagtime-editor .cm-hr { border-color: rgb(55 65 81); }
+.tagtime-editor .cm-hr-widget {
+  display: inline-block;
+  width: 100%;
+  height: 1px;
+  vertical-align: middle;
+  border-top: 1px solid rgb(229 231 235);
+  cursor: text;
+}
+.dark .tagtime-editor .cm-hr-widget { border-color: rgb(55 65 81); }

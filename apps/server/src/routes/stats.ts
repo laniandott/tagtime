@@ -64,7 +64,7 @@ export default async function statsRoutes(app: FastifyInstance) {
 
     const earliest = new Date(Math.min(todayStart.getTime(), weekStart.getTime(), monthStart.getTime()))
     const entries = await prisma.timeEntry.findMany({
-      where: { ...overlappingRange(earliest, now), ...cf },
+      where: { ...overlappingRange(earliest, now), dismissed: false, ...cf },
       include: { tag: { include: { category: true } } },
     })
 
@@ -143,7 +143,7 @@ export default async function statsRoutes(app: FastifyInstance) {
     }
 
     const entries = await prisma.timeEntry.findMany({
-      where: { ...overlappingRange(start, end), ...cf },
+      where: { ...overlappingRange(start, end), dismissed: false, ...cf },
       include: { tag: { include: { category: true } } },
     })
 
@@ -211,7 +211,7 @@ export default async function statsRoutes(app: FastifyInstance) {
     }
 
     const entries = await prisma.timeEntry.findMany({
-      where: { ...overlappingRange(start, end), ...cf },
+      where: { ...overlappingRange(start, end), dismissed: false, ...cf },
       include: { tag: { include: { category: true } } },
     })
 
@@ -230,5 +230,125 @@ export default async function statsRoutes(app: FastifyInstance) {
       map.set(e.tagId, cur)
     }
     return Array.from(map.values()).sort((a, b) => b.ms - a.ms)
+  })
+
+  // 碎片化指数：GET /fragmentation?from=&to=
+  app.get('/fragmentation', async (req, reply) => {
+    const raw = req.query as Record<string, unknown>
+    const from = singleQueryString(raw.from)
+    const to = singleQueryString(raw.to)
+    if (from === null || to === null) {
+      return reply.code(400).send({ error: '查询参数必须是单个字符串' })
+    }
+    const end = to ? parseDate(to) : new Date()
+    if (!end) return reply.code(400).send({ error: '结束时间无效' })
+    let start: Date
+    if (from) {
+      const parsedStart = parseDate(from)
+      if (!parsedStart) return reply.code(400).send({ error: '开始时间无效' })
+      start = parsedStart
+    } else {
+      start = new Date(end.getFullYear(), end.getMonth(), end.getDate())
+      start.setDate(start.getDate() - 6)
+    }
+    if (end < start) return reply.code(400).send({ error: '结束时间不能早于开始时间' })
+
+    // 查询该时间范围内所有未被 dismissed 的记录
+    const entries = await prisma.timeEntry.findMany({
+      where: {
+        ...overlappingRange(start, end),
+        dismissed: false,
+      },
+      include: { tag: true },
+      orderBy: { startTime: 'asc' },
+    })
+
+    // 按 tag 分组，找出所有链条
+    const tagChains = new Map<string, Array<{
+      rootId: string
+      chainLength: number
+      focusedMs: number
+      spanMs: number
+    }>>()
+
+    const processed = new Set<string>()
+
+    for (const entry of entries) {
+      if (processed.has(entry.id)) continue
+
+      // 找到链条根节点
+      let rootId = entry.id
+      let current = entry
+      while (current.resumedFromId) {
+        const parent = entries.find(e => e.id === current.resumedFromId)
+        if (!parent) break
+        rootId = parent.id
+        current = parent
+      }
+
+      // 收集整条链
+      const chain: typeof entries = []
+      const queue = [rootId]
+      while (queue.length > 0) {
+        const id = queue.shift()!
+        const e = entries.find(e => e.id === id)
+        if (!e || processed.has(e.id)) continue
+        processed.add(e.id)
+        chain.push(e)
+        // 找子节点
+        const children = entries.filter(e => e.resumedFromId === id)
+        queue.push(...children.map(c => c.id))
+      }
+
+      if (chain.length === 0) continue
+
+      // 计算该链的统计数据
+      const chainLength = chain.length
+      let focusedMs = 0
+      for (const e of chain) {
+        if (e.endTime) {
+          focusedMs += overlapDurationMs(e.startTime, e.endTime, start, end)
+        }
+      }
+      const firstStart = chain[0].startTime
+      const lastEnd = chain[chain.length - 1].endTime
+      const spanMs = lastEnd ? Math.min(lastEnd.getTime(), end.getTime()) - Math.max(firstStart.getTime(), start.getTime()) : focusedMs
+
+      const tagId = chain[0].tagId
+      if (!tagChains.has(tagId)) {
+        tagChains.set(tagId, [])
+      }
+      tagChains.get(tagId)!.push({
+        rootId,
+        chainLength,
+        focusedMs,
+        spanMs,
+      })
+    }
+
+    // 聚合每个 tag 的结果
+    const result = []
+    for (const [tagId, chains] of tagChains) {
+      const tag = entries.find(e => e.tagId === tagId)?.tag
+      if (!tag) continue
+
+      const totalFocusedMs = chains.reduce((sum, c) => sum + c.focusedMs, 0)
+      const totalSpanMs = chains.reduce((sum, c) => sum + c.spanMs, 0)
+      const interruptCount = chains.reduce((sum, c) => sum + (c.chainLength - 1), 0)
+      const ratio = totalSpanMs > 0 ? totalFocusedMs / totalSpanMs : 1
+
+      result.push({
+        tagId,
+        tagName: tag.name,
+        focusedMs: totalFocusedMs,
+        spanMs: totalSpanMs,
+        ratio,
+        interruptCount,
+      })
+    }
+
+    return {
+      tags: result.sort((a, b) => b.focusedMs - a.focusedMs),
+    }
   })
 }

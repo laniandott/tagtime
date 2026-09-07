@@ -301,6 +301,7 @@ function TagForm({ tag, categories, onClose, onSaved }: {
   const [icon, setIcon] = useState(tag?.icon ?? '')
   const [categoryId, setCategoryId] = useState(tag?.categoryId ?? categories[0]?.id ?? '')
   const [trackType, setTrackType] = useState<'time' | 'count'>(tag?.trackType ?? 'time')
+  const [mode, setMode] = useState<'chaos' | 'ordered'>(tag?.mode ?? 'chaos')
   const [error, setError] = useState('')
 
   const save = async () => {
@@ -311,9 +312,9 @@ function TagForm({ tag, categories, onClose, onSaved }: {
     setError('')
     try {
       if (tag) {
-        await api.tags.update(tag.id, { name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType })
+        await api.tags.update(tag.id, { name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType, mode })
       } else {
-        await api.tags.create({ name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType })
+        await api.tags.create({ name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType, mode })
       }
       onSaved()
     } catch (e) {
@@ -352,6 +353,27 @@ function TagForm({ tag, categories, onClose, onSaved }: {
             </button>
           </div>
         </Field>
+        {trackType === 'time' && (
+          <Field label="专注模式">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setMode('chaos')}
+                className={`px-4 py-2 rounded-lg text-sm border ${mode === 'chaos' ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+              >
+                🌀 混沌
+              </button>
+              <button
+                onClick={() => setMode('ordered')}
+                className={`px-4 py-2 rounded-lg text-sm border ${mode === 'ordered' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+              >
+                📝 有序
+              </button>
+            </div>
+            <div className="text-xs text-gray-400 mt-1">
+              {mode === 'chaos' ? '混沌：停止后无法续接，适合随性活动' : '有序：可暂存后续接，适合深度工作'}
+            </div>
+          </Field>
+        )}
         <Field label="图标（可选）">
           <input value={icon} onChange={(e) => setIcon(e.target.value)} placeholder="emoji" className="input" />
         </Field>

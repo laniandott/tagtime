@@ -13,6 +13,21 @@ export { NOTES_DIR }
 
 // 笔记相关事件，阶段三由 WebSocket 订阅并广播
 export const notesEmitter = new EventEmitter()
+let notesEventsSuppressed = false
+
+export async function withNotesEventsSuppressed<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = notesEventsSuppressed
+  notesEventsSuppressed = true
+  try {
+    return await fn()
+  } finally {
+    notesEventsSuppressed = previous
+  }
+}
+
+function emitNoteEvent(type: string, payload: unknown): void {
+  if (!notesEventsSuppressed) notesEmitter.emit(type, payload)
+}
 
 // ---- 哈希 ----
 export function computeHash(content: string): string {
@@ -22,7 +37,7 @@ export function computeHash(content: string): string {
 // ---- 路径安全 ----
 const FILE_NAME_ILLEGAL = /[<>:"/\\|?*\u0000-\u001f]/g
 const FILE_SEGMENT_ILLEGAL = /[<>:"\\|?*\u0000-\u001f]/
-const RESERVED_ROOT_DIRS = new Set(['assets'])
+const RESERVED_ROOT_DIRS = new Set(['assets', '.obsidian', '.trash'])
 const WINDOWS_RESERVED_BASENAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 const MAX_NOTE_PATH_LENGTH = 1024
 const MAX_NOTE_PATH_SEGMENTS = 32
@@ -51,7 +66,7 @@ function assertRelativeSegments(input: string, kind: '笔记' | '文件夹'): st
   if (segments.some((part) => WINDOWS_RESERVED_BASENAMES.test(part.replace(/\..*$/, '')))) {
     throw new Error('路径包含 Windows 保留名称')
   }
-  if (RESERVED_ROOT_DIRS.has(segments[0].toLowerCase())) throw new Error('assets 目录不允许作为笔记路径')
+  if (RESERVED_ROOT_DIRS.has(segments[0].toLowerCase())) throw new Error('保留目录不允许作为笔记路径')
   return segments
 }
 
@@ -345,9 +360,9 @@ export async function syncNoteFileLocked(
   await rebuildEntityLinksForNote(note.id)
 
   if (relocatedFrom) {
-    notesEmitter.emit('note.renamed', { id: note.id, path: rel, from: relocatedFrom, revision: note.revision })
+    emitNoteEvent('note.renamed', { id: note.id, path: rel, from: relocatedFrom, revision: note.revision })
   } else {
-    notesEmitter.emit(existing ? 'note.updated' : 'note.created', {
+    emitNoteEvent(existing ? 'note.updated' : 'note.created', {
       id: note.id,
       path: rel,
       revision: note.revision,
@@ -360,8 +375,13 @@ export async function syncNoteFileLocked(
 export async function syncNoteFile(
   relPath: string,
   reason: string,
+  expectedNotesDir?: string,
 ): Promise<{ id: string; changed: boolean } | null> {
-  return enqueue(relPath, () => syncNoteFileLocked(relPath, reason))
+  return enqueue(relPath, () => {
+    // watcher 事件可能在切换文件库后才从队列中取出，旧根目录事件必须丢弃。
+    if (expectedNotesDir && expectedNotesDir !== NOTES_DIR) return Promise.resolve(null)
+    return syncNoteFileLocked(relPath, reason)
+  })
 }
 
 // 重建某笔记的出链 NoteLink（先删后插，按 targetKey 去重）
@@ -425,13 +445,17 @@ export async function removeNoteLocked(relPath: string): Promise<'deleted' | 'mi
     data: { isResolved: false, targetNoteId: null },
   })
   await prisma.note.delete({ where: { id: note.id } })
-  notesEmitter.emit('note.deleted', { id: note.id, path: relPath })
+  emitNoteEvent('note.deleted', { id: note.id, path: relPath })
   return 'deleted' as const
 }
 
 // watcher 入口：带 per-path 锁删除索引；即便与 API DELETE 竞态，也因同一把锁而幂等
-export async function removeNoteByPath(relPath: string): Promise<'deleted' | 'missing'> {
-  return enqueue(relPath, () => removeNoteLocked(relPath))
+export async function removeNoteByPath(relPath: string, expectedNotesDir?: string): Promise<'deleted' | 'missing'> {
+  return enqueue(relPath, () => {
+    // 与 syncNoteFile 相同，避免旧 watcher 队列误删新文件库的同名索引。
+    if (expectedNotesDir && expectedNotesDir !== NOTES_DIR) return Promise.resolve('missing' as const)
+    return removeNoteLocked(relPath)
+  })
 }
 
 // 把正文中的 [[旧标题]] / [[旧标题|别名]] 改写为新标题（大小写不敏感，保留别名）。
@@ -499,12 +523,12 @@ export async function rewriteNoteTitleInOthers(
   return count
 }
 
-// 深扫 NOTES_DIR 下的全部 .md（跳过 .tmp/.bak、assets/ 与符号链接目录）
+// 深扫活动文件库下的全部 .md（跳过保留目录、.tmp/.bak 与符号链接目录）
 async function collectMarkdownFiles(dir = NOTES_DIR, prefix = ''): Promise<string[]> {
   const out: string[] = []
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
   for (const e of entries) {
-    if (!prefix && e.name.toLowerCase() === 'assets') continue
+    if (!prefix && RESERVED_ROOT_DIRS.has(e.name.toLowerCase())) continue
     if (e.name.endsWith('.tmp') || e.name.endsWith('.bak')) continue
     const rel = prefix ? `${prefix}/${e.name}` : e.name
     if (e.isDirectory() && !e.isSymbolicLink()) {
@@ -528,7 +552,7 @@ export async function cleanupTmpFiles(): Promise<void> {
   async function walk(dir: string, isRoot: boolean): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const entry of entries) {
-      if (isRoot && entry.name.toLowerCase() === 'assets') continue
+      if (isRoot && RESERVED_ROOT_DIRS.has(entry.name.toLowerCase())) continue
       const abs = join(dir, entry.name)
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         await walk(abs, false)

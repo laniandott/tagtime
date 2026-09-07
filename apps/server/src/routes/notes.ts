@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import '@fastify/websocket'
 import { unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { posix } from 'node:path'
@@ -18,9 +19,18 @@ import {
   ensureNoteFolder,
   listNoteFolders,
   removeEmptyNoteFolder,
+  rebuildNotesIndex,
+  withNotesEventsSuppressed,
 } from '../notes.js'
 import { normalizeTitleKey } from '../links.js'
-import { CONTENT_LIMITS } from '../config.js'
+import {
+  CONTENT_LIMITS,
+  getNotesDir,
+  notesDirUsesEnvironment,
+  setNotesDir,
+  validateNotesDir,
+} from '../config.js'
+import { stopNotesDirectory, trackNotesDirectory } from '../notes-watcher.js'
 import { getLocalGraph, getGlobalGraph } from '../notes-graph.js'
 import { getRelatedEntities, getNotesByEntity } from '../notes-entities.js'
 import { singleQueryString } from './query.js'
@@ -42,15 +52,80 @@ export default async function noteRoutes(app: FastifyInstance) {
     const updated = (p: unknown) => send({ type: 'note.updated', ...(p as object) })
     const deleted = (p: unknown) => send({ type: 'note.deleted', ...(p as object) })
     const renamed = (p: unknown) => send({ type: 'note.renamed', ...(p as object) })
+    const reindexed = (p: unknown) => send({ type: 'notes.reindexed', ...(p as object) })
     notesEmitter.on('note.created', created)
     notesEmitter.on('note.updated', updated)
     notesEmitter.on('note.deleted', deleted)
     notesEmitter.on('note.renamed', renamed)
+    notesEmitter.on('notes.reindexed', reindexed)
     socket.on('close', () => {
       notesEmitter.off('note.created', created)
       notesEmitter.off('note.updated', updated)
       notesEmitter.off('note.deleted', deleted)
       notesEmitter.off('note.renamed', renamed)
+      notesEmitter.off('notes.reindexed', reindexed)
+    })
+  })
+
+  // 当前文件库位置。浏览器只提交本机绝对路径，由本地服务访问该目录。
+  app.get('/vault', async () => ({
+    path: getNotesDir(),
+    source: notesDirUsesEnvironment() ? 'environment' : 'config',
+    noteCount: await prisma.note.count(),
+  }))
+
+  // 切换文件库：只更换索引来源，不复制、移动或删除任何 Markdown 文件。
+  app.post('/vault', async (req, reply) => {
+    const { path } = (req.body ?? {}) as { path?: string }
+    let nextPath: string
+    try {
+      nextPath = validateNotesDir(path ?? '')
+    } catch (e: any) {
+      return reply.code(400).send({ error: e.message })
+    }
+
+    const currentPath = getNotesDir()
+    if (nextPath === currentPath) {
+      return reply.send({
+        path: currentPath,
+        source: notesDirUsesEnvironment() ? 'environment' : 'config',
+        noteCount: await prisma.note.count(),
+      })
+    }
+    if (notesDirUsesEnvironment()) {
+      return reply.code(409).send({ error: '当前由 NOTES_DIR 环境变量固定文件库路径' })
+    }
+
+    return withNoteLock('__vault', async () => {
+      // 其它请求可能在排队期间已经完成一次切换，再检查一次实际路径。
+      const activePath = getNotesDir()
+      if (nextPath === activePath) {
+        return reply.send({
+          path: activePath,
+          source: notesDirUsesEnvironment() ? 'environment' : 'config',
+          noteCount: await prisma.note.count(),
+        })
+      }
+      try {
+        await stopNotesDirectory()
+        setNotesDir(nextPath)
+        await withNotesEventsSuppressed(() => rebuildNotesIndex())
+        trackNotesDirectory()
+        notesEmitter.emit('notes.reindexed', { path: nextPath })
+        return reply.send({ path: nextPath, source: 'config', noteCount: await prisma.note.count() })
+      } catch (error: any) {
+        // 切换失败时尽力恢复原路径与索引；原目录中的 Markdown 从未被修改。
+        try {
+          setNotesDir(activePath)
+          await withNotesEventsSuppressed(() => rebuildNotesIndex())
+          trackNotesDirectory()
+          notesEmitter.emit('notes.reindexed', { path: activePath })
+        } catch (restoreError) {
+          req.log.error(restoreError, '文件库切换失败且恢复索引失败')
+        }
+        req.log.error(error, '文件库切换失败')
+        return reply.code(500).send({ error: '文件库切换失败，已尝试恢复原文件库' })
+      }
     })
   })
 

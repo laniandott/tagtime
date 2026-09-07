@@ -6,6 +6,7 @@ export type NoteEvent =
   | { type: 'note.updated'; id: string; path: string; revision: number }
   | { type: 'note.deleted'; id: string; path: string }
   | { type: 'note.renamed'; id: string; path: string }
+  | { type: 'notes.reindexed'; path: string }
 
 // 监听笔记 WebSocket，断线自动重连（指数退避，上限 5s）
 export function useNotesSocket(onEvent: (ev: NoteEvent) => void) {

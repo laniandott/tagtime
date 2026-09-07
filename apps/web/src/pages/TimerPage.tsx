@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useStore, formatClock, formatDuration, toIsoSafe } from '../store'
 import { api, resolveUploadUrl } from '../api'
-import type { TimeEntry, Tag, Memo, LinkedNoteEntry } from '../types'
+import type { TimeEntry, Tag, Todo, Memo, LinkedNoteEntry } from '../types'
 import { DateTimeSecondPicker } from '../components/DateTimeSecondPicker'
+import { syncNativeStatusBarTheme } from '../nativeStatusBar'
 
 // 辅助函数：格式化时间为 YYYY/MM/DD HH:mm:ss
 const formatDateTimeWithSeconds = (isoStr: string) => {
@@ -34,7 +35,22 @@ const toLocalInputWithSeconds = (d: Date | string) => {
 
 
 export default function TimerPage() {
-  const { tags, categories, running, start, stop, stopAll, quickCount } = useStore()
+  const {
+    tags,
+    categories,
+    running,
+    pending,
+    start,
+    stop,
+    stopAll,
+    quickCount,
+    resumeEntry,
+    dismissPending,
+    finishPending,
+    terminateChain,
+  } = useStore()
+  const [todos, setTodos] = useState<Todo[]>([])
+  const [quickTodoId, setQuickTodoId] = useState('')
   const [recent, setRecent] = useState<TimeEntry[]>([])
   const [stoppingId, setStoppingId] = useState<string | null>(null)
   const [stoppingAll, setStoppingAll] = useState(false)
@@ -45,12 +61,28 @@ export default function TimerPage() {
   const [showFullscreen, setShowFullscreen] = useState(false)
   const [filterCat, setFilterCat] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [showStopDialog, setShowStopDialog] = useState<{ entryId: string; tag: Tag } | null>(null)
+  const [showResumeDialog, setShowResumeDialog] = useState<TimeEntry | null>(null)
+  const [showDismissDialog, setShowDismissDialog] = useState<TimeEntry | null>(null)
+  const [showActivityPicker, setShowActivityPicker] = useState<{ interruptedFromId?: string } | null>(null)
+  const [showRecoveryDialog, setShowRecoveryDialog] = useState<TimeEntry | null>(null)
+  const [showTerminateDialog, setShowTerminateDialog] = useState<TimeEntry | null>(null)
   // 最近记录日期范围：默认显示当天
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7days' | '30days' | 'custom'>('today')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [recentError, setRecentError] = useState('')
   const loadRecentSequence = useRef(0)
+
+  const loadTodos = async () => {
+    try {
+      setTodos(await api.todos.list({ status: 'pending' }))
+    } catch {
+      // Todo 只是活动的可选关联，加载失败不应阻塞计时。
+    }
+  }
+
+  useEffect(() => { void loadTodos() }, [])
 
   // 加载最近记录（按日期范围筛选）
   const loadRecent = async () => {
@@ -98,25 +130,45 @@ export default function TimerPage() {
     void loadRecent()
   }, [running.length, dateRange, customFrom, customTo])
 
-  const handleStart = async (tagId: string) => {
+  const startActivity = async (tagId: string, todoId?: string, interruptedFromId?: string) => {
     const tag = tags.find((t) => t.id === tagId)
+    if (tag?.trackType === 'count') {
+      await quickCount(tagId, undefined, todoId || undefined)
+    } else {
+      await start(tagId, undefined, todoId || undefined, interruptedFromId)
+    }
+    await loadRecent()
+  }
+
+  const handleStart = async (tagId: string) => {
     try {
-      if (tag?.trackType === 'count') {
-        await quickCount(tagId)
-        await loadRecent()
-      } else {
-        await start(tagId)
-      }
+      await startActivity(tagId, quickTodoId || undefined)
     } catch (e) {
       alert((e as Error).message)
     }
   }
 
+  const openNextRecovery = () => {
+    const next = useStore.getState().pending[0]
+    setShowRecoveryDialog(next ?? null)
+  }
+
   const handleStop = async (id: string, note?: string) => {
+    const entry = running.find(e => e.id === id)
+    if (!entry) return
+
+    // 有序 tag 弹窗选择
+    if (entry.tag?.mode === 'ordered') {
+      setShowStopDialog({ entryId: id, tag: entry.tag })
+      return
+    }
+
+    // 混沌 tag 直接停止
     setStoppingId(id)
     try {
-      await stop(id, note)
+      await stop(id, note, false)
       await loadRecent()
+      openNextRecovery()
     } catch (e) {
       alert((e as Error).message)
     } finally {
@@ -161,9 +213,10 @@ export default function TimerPage() {
       if (searchQuery) {
         const q = searchQuery.toLowerCase()
         const tagName = e.tag?.name?.toLowerCase() ?? ''
+        const todoTitle = e.todo?.title?.toLowerCase() ?? ''
         const note = e.note?.toLowerCase() ?? ''
         const memoMatch = e.memos?.some((m) => m.content.toLowerCase().includes(q)) ?? false
-        if (!tagName.includes(q) && !note.includes(q) && !memoMatch) return false
+        if (!tagName.includes(q) && !todoTitle.includes(q) && !note.includes(q) && !memoMatch) return false
       }
       return true
     })
@@ -176,6 +229,46 @@ export default function TimerPage() {
 
   return (
     <div className="space-y-6">
+      {/* 暂存条 */}
+      {pending.length > 0 && (
+        <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-blue-700 dark:text-blue-300">⏸ 暂存待续（{pending.length}）</h3>
+          </div>
+          <div className="space-y-2">
+            {pending.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center justify-between bg-white dark:bg-gray-900 rounded-lg border border-blue-100 dark:border-blue-900 px-3 py-2"
+              >
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: entry.tag?.color }} />
+                  <span className="font-medium text-sm truncate">{entry.tag?.name}</span>
+                  {entry.totalFocusedMs !== undefined && (
+                    <span className="text-xs text-gray-500">· 专注 {formatDuration(entry.totalFocusedMs)}</span>
+                  )}
+                  {entry.note && <span className="text-xs text-gray-400 truncate">· {entry.note.slice(0, 30)}</span>}
+                </div>
+                <div className="flex gap-2 flex-shrink-0 ml-2">
+                  <button
+                    onClick={() => setShowResumeDialog(entry)}
+                    className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 hover:bg-blue-200"
+                  >
+                    续接
+                  </button>
+                  <button
+                    onClick={() => setShowDismissDialog(entry)}
+                    className="text-xs px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    算了
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 进行中的计时卡片 */}
       {running.length > 0 ? (
         <div className="space-y-3">
@@ -215,6 +308,12 @@ export default function TimerPage() {
                 entry={entry}
                 stopping={stoppingId === entry.id}
                 onStop={(note) => handleStop(entry.id, note)}
+                todos={todos}
+                onTodoChange={async (todoId) => {
+                  await api.timer.update(entry.id, { todoId: todoId || null })
+                  await useStore.getState().loadRunning()
+                }}
+                onTerminate={() => setShowTerminateDialog(entry)}
                 onAddMemo={() => setMemoTargetEntry(entry)}
                 onAddPointRecord={() => setPointTargetEntry(entry)}
               />
@@ -242,6 +341,19 @@ export default function TimerPage() {
             + 补录
           </button>
         </div>
+        {todos.length > 0 && (
+          <div className="mb-3 flex items-center gap-2 text-sm">
+            <span className="text-gray-500 dark:text-gray-400">关联待办</span>
+            <select
+              value={quickTodoId}
+              onChange={(e) => setQuickTodoId(e.target.value)}
+              className="max-w-full input !w-auto !py-1.5 text-sm"
+            >
+              <option value="">不关联待办</option>
+              {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+            </select>
+          </div>
+        )}
         {tags.length === 0 ? (
           <div className="text-center py-8 text-gray-400">
             还没有标签，去 <a href="/tags" className="text-brand underline">标签管理</a> 创建一些吧
@@ -315,7 +427,7 @@ export default function TimerPage() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索标题/备注/打点…"
+                placeholder="搜索活动/待办/备注/打点…"
                 className="w-full text-xs border border-gray-200 dark:border-gray-800 rounded-lg pl-7 pr-2 py-1 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 sm:w-36 sm:focus:w-48 transition-all focus:outline-none focus:border-brand"
               />
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
@@ -428,6 +540,7 @@ export default function TimerPage() {
         <ManualEntryModal
           tags={tags}
           categories={categories}
+          todos={todos}
           onClose={() => setShowManual(false)}
           onSaved={async () => {
             setShowManual(false)
@@ -441,10 +554,103 @@ export default function TimerPage() {
         <EntryEditModal
           entry={editingEntry}
           tags={tags}
+          todos={todos}
           onClose={() => setEditingEntry(null)}
           onSaved={async () => {
             setEditingEntry(null)
             await loadRecent()
+          }}
+        />
+      )}
+
+      {/* 有序 tag 停止选择弹窗 */}
+      {showStopDialog && (
+        <StopDialog
+          entryId={showStopDialog.entryId}
+          tag={showStopDialog.tag}
+          onClose={() => setShowStopDialog(null)}
+          onConfirm={async (pendingResume, note) => {
+            setStoppingId(showStopDialog.entryId)
+            try {
+              await stop(showStopDialog.entryId, note, pendingResume)
+              if (pendingResume) {
+                setShowActivityPicker({ interruptedFromId: showStopDialog.entryId })
+              } else {
+                openNextRecovery()
+              }
+              await loadRecent()
+            } catch (e) {
+              alert((e as Error).message)
+            } finally {
+              setStoppingId(null)
+            }
+          }}
+        />
+      )}
+
+      {/* 续接弹窗 */}
+      {showResumeDialog && (
+        <ResumeDialog
+          entry={showResumeDialog}
+          onClose={() => setShowResumeDialog(null)}
+          onConfirm={async () => {
+            await resumeEntry(showResumeDialog.id)
+            await loadRecent()
+          }}
+        />
+      )}
+
+      {showActivityPicker && (
+        <ActivityPickerDialog
+          tags={tags}
+          todos={todos}
+          interruptedFromId={showActivityPicker.interruptedFromId}
+          onClose={() => setShowActivityPicker(null)}
+          onStart={async (tagId, todoId) => {
+            await startActivity(tagId, todoId, showActivityPicker.interruptedFromId)
+          }}
+        />
+      )}
+
+      {showRecoveryDialog && (
+        <RecoveryDialog
+          entries={pending}
+          onClose={() => setShowRecoveryDialog(null)}
+          onResume={async (entry) => {
+            await resumeEntry(entry.id)
+            setShowRecoveryDialog(null)
+            await loadRecent()
+          }}
+          onFinish={async (entry) => {
+            await finishPending(entry.id)
+            openNextRecovery()
+          }}
+          onStartAnother={(entry) => {
+            setShowRecoveryDialog(null)
+            setShowActivityPicker({ interruptedFromId: entry.id })
+          }}
+        />
+      )}
+
+      {showTerminateDialog && (
+        <TerminateDialog
+          entry={showTerminateDialog}
+          onClose={() => setShowTerminateDialog(null)}
+          onConfirm={async (reason) => {
+            await terminateChain(showTerminateDialog.id, reason)
+            setShowTerminateDialog(null)
+            await loadRecent()
+          }}
+        />
+      )}
+
+      {/* 放弃暂存弹窗 */}
+      {showDismissDialog && (
+        <DismissDialog
+          entry={showDismissDialog}
+          onClose={() => setShowDismissDialog(null)}
+          onConfirm={async (reason) => {
+            await dismissPending(showDismissDialog.id, reason)
           }}
         />
       )}
@@ -517,10 +723,9 @@ function FullscreenClockOverlay({ onClose }: { onClose: () => void }) {
     const hideNativeStatusBar = async () => {
       try {
         if (!isNative) return
-        const { StatusBar, Style } = await import('@capacitor/status-bar')
+        const { StatusBar } = await import('@capacitor/status-bar')
         try { await StatusBar.setOverlaysWebView({ overlay: false }) } catch { /* noop */ }
         await StatusBar.hide()
-        try { await StatusBar.setStyle({ style: Style.Dark }) } catch { /* noop */ }
       } catch { /* noop */ }
     }
     hideNativeStatusBar()
@@ -530,9 +735,9 @@ function FullscreenClockOverlay({ onClose }: { onClose: () => void }) {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => { /* noop */ })
       if (isNative) {
           import('@capacitor/status-bar')
-          .then(async ({ StatusBar, Style }) => {
+          .then(async ({ StatusBar }) => {
             await StatusBar.show()
-            try { await StatusBar.setStyle({ style: Style.Dark }) } catch { /* noop */ }
+            await syncNativeStatusBarTheme()
             window.dispatchEvent(new Event('resize'))
           })
           .catch(() => { /* noop */ })
@@ -645,16 +850,20 @@ function FullscreenClockOverlay({ onClose }: { onClose: () => void }) {
 }
 
 // 进行中计时卡片（内部自带每秒时钟，避免整页重渲染）
-function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: {
+function RunningTimer({ entry, stopping, todos, onStop, onTodoChange, onTerminate, onAddMemo, onAddPointRecord }: {
   entry: TimeEntry
   stopping: boolean
+  todos: Todo[]
   onStop: (note?: string) => void
+  onTodoChange: (todoId: string) => Promise<void>
+  onTerminate: () => void
   onAddMemo: () => void
   onAddPointRecord: () => void
 }) {
   const clockOffset = useStore((s) => s.clockOffset)
   const [note, setNote] = useState(entry.note ?? '')
   const [noteSaved, setNoteSaved] = useState(false)
+  const [todoSaving, setTodoSaving] = useState(false)
   const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
@@ -666,9 +875,24 @@ function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: 
   const elapsed = Math.max(0, (now - clockOffset) - new Date(entry.startTime).getTime())
 
   const saveNote = async () => {
-    await api.timer.update(entry.id, { note })
-    setNoteSaved(true)
-    setTimeout(() => setNoteSaved(false), 1500)
+    try {
+      await api.timer.update(entry.id, { note })
+      setNoteSaved(true)
+      setTimeout(() => setNoteSaved(false), 1500)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '保存备注失败')
+    }
+  }
+
+  const changeTodo = async (todoId: string) => {
+    setTodoSaving(true)
+    try {
+      await onTodoChange(todoId)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '关联待办失败')
+    } finally {
+      setTodoSaving(false)
+    }
   }
 
   return (
@@ -697,6 +921,18 @@ function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: 
       </div>
       <div className="text-xs text-gray-400 mb-4">
         开始于 {formatTimeWithSeconds(entry.startTime)}
+      </div>
+      <div className="flex items-center justify-center gap-2 mb-4">
+        <span className="text-xs text-gray-500 dark:text-gray-400">待办</span>
+        <select
+          value={entry.todoId ?? ''}
+          disabled={todoSaving}
+          onChange={(e) => void changeTodo(e.target.value)}
+          className="max-w-[min(22rem,80vw)] input !w-auto !py-1.5 text-xs"
+        >
+          <option value="">不关联待办</option>
+          {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+        </select>
       </div>
       {/* 备注编辑 */}
       <div className="flex gap-2 mb-4 max-w-sm mx-auto">
@@ -737,6 +973,14 @@ function RunningTimer({ entry, stopping, onStop, onAddMemo, onAddPointRecord }: 
           className="px-8 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold disabled:opacity-50 transition-colors flex items-center gap-1.5"
         >
           {stopping ? '停止中…' : '⏹ 停止'}
+        </button>
+        <button
+          type="button"
+          onClick={onTerminate}
+          className="px-3 py-2.5 rounded-xl border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 text-sm transition-colors"
+          title="终止当前活动及其接管链，必须填写原因"
+        >
+          ⚠ 终止链路
         </button>
       </div>
     </div>
@@ -808,6 +1052,11 @@ function TimelineEntryItem({
                 >
                   {entry.tag.category.icon ? `${entry.tag.category.icon} ` : ''}
                   {entry.tag.category.name}
+                </span>
+              )}
+              {entry.todo && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 font-medium truncate max-w-[18rem]" title={entry.todo.title}>
+                  待办：{entry.todo.title}
                 </span>
               )}
               {isRunning && (
@@ -1130,9 +1379,10 @@ export function PointRecordModal({
 }
 
 // 补录弹窗
-function ManualEntryModal({ tags, categories, onClose, onSaved }: {
+function ManualEntryModal({ tags, categories, todos, onClose, onSaved }: {
   tags: Tag[]
   categories: { id: string; name: string; color: string }[]
+  todos: Todo[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -1145,6 +1395,7 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
   const [startTime, setStartTime] = useState(twoHoursAgoLocal)
   const [endTime, setEndTime] = useState(nowLocal)
   const [note, setNote] = useState('')
+  const [todoId, setTodoId] = useState('')
   const [error, setError] = useState('')
 
   const save = async () => {
@@ -1169,6 +1420,7 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
         startTime: startIso,
         endTime: endIso,
         note: note || undefined,
+        todoId: todoId || undefined,
       })
       onSaved()
     } catch (e) {
@@ -1225,6 +1477,15 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
           <label className="block text-sm text-gray-500 mb-1">备注（可选）</label>
           <input value={note} onChange={(e) => setNote(e.target.value)} className="input" placeholder="如：完成了 XX 任务" />
         </div>
+        {todos.length > 0 && (
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">关联待办（可选）</label>
+            <select value={todoId} onChange={(e) => setTodoId(e.target.value)} className="input">
+              <option value="">不关联待办</option>
+              {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+            </select>
+          </div>
+        )}
         {error && <div className="text-sm text-red-500">{error}</div>}
       </div>
       <FormActions onCancel={onClose} onSave={save} saveLabel="补录" />
@@ -1233,9 +1494,10 @@ function ManualEntryModal({ tags, categories, onClose, onSaved }: {
 }
 
 // 编辑记录弹窗
-function EntryEditModal({ entry, tags, onClose, onSaved }: {
+function EntryEditModal({ entry, tags, todos, onClose, onSaved }: {
   entry: TimeEntry
   tags: Tag[]
+  todos: Todo[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -1243,6 +1505,7 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
   const [startTime, setStartTime] = useState(toLocalInputWithSeconds(entry.startTime))
   const [endTime, setEndTime] = useState(entry.endTime ? toLocalInputWithSeconds(entry.endTime) : '')
   const [note, setNote] = useState(entry.note ?? '')
+  const [todoId, setTodoId] = useState(entry.todoId ?? '')
   const [error, setError] = useState('')
 
   // 次数型标签的记录 startTime === endTime（零时长打卡），编辑时需同步起止时间
@@ -1279,6 +1542,7 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
         startTime: startIso,
         endTime: endIso,
         note,
+        todoId: todoId || null,
       })
       useStore.getState().loadRunning()
       onSaved()
@@ -1337,6 +1601,15 @@ function EntryEditModal({ entry, tags, onClose, onSaved }: {
           <label className="block text-sm text-gray-500 mb-1">备注</label>
           <input value={note} onChange={(e) => setNote(e.target.value)} className="input" />
         </div>
+        {todos.length > 0 && (
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">关联待办（可选）</label>
+            <select value={todoId} onChange={(e) => setTodoId(e.target.value)} className="input">
+              <option value="">不关联待办</option>
+              {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+            </select>
+          </div>
+        )}
         {error && <div className="text-sm text-red-500">{error}</div>}
       </div>
       <FormActions onCancel={onClose} onSave={save} saveLabel="保存" />
@@ -1645,6 +1918,368 @@ export function MemoEditModal({
         )}
       </div>
       <FormActions onCancel={onClose} onSave={save} saveLabel="保存修改" />
+    </ModalShell>
+  )
+}
+
+// 暂停后选择下一活动
+function ActivityPickerDialog({ tags, todos, interruptedFromId, onClose, onStart }: {
+  tags: Tag[]
+  todos: Todo[]
+  interruptedFromId?: string
+  onClose: () => void
+  onStart: (tagId: string, todoId?: string) => Promise<void>
+}) {
+  const timeTags = tags.filter((tag) => tag.trackType === 'time')
+  const [tagId, setTagId] = useState(timeTags[0]?.id ?? '')
+  const [todoId, setTodoId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleStart = async () => {
+    if (!tagId) {
+      setError('请选择一个时长型活动')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      await onStart(tagId, todoId || undefined)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '开始活动失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell title={interruptedFromId ? '选择接下来做什么' : '选择活动'} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          原活动已经暂存，可以现在开始下一项，也可以稍后再处理。
+        </p>
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">活动</label>
+          <select value={tagId} onChange={(e) => setTagId(e.target.value)} className="input">
+            <option value="">请选择活动…</option>
+            {timeTags.map((tag) => (
+              <option key={tag.id} value={tag.id}>{tag.icon ? `${tag.icon} ` : ''}{tag.name}</option>
+            ))}
+          </select>
+        </div>
+        {todos.length > 0 && (
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">关联待办（可选）</label>
+            <select value={todoId} onChange={(e) => setTodoId(e.target.value)} className="input">
+              <option value="">不关联待办</option>
+              {todos.map((todo) => <option key={todo.id} value={todo.id}>{todo.title}</option>)}
+            </select>
+          </div>
+        )}
+        {timeTags.length === 0 && <div className="text-sm text-gray-500">当前没有可计时的时长型活动。</div>}
+        {error && <div className="text-sm text-red-500">{error}</div>}
+        <div className="flex gap-2 pt-2">
+          <button
+            onClick={() => void handleStart()}
+            disabled={loading || timeTags.length === 0}
+            className="flex-1 px-4 py-2.5 rounded-xl bg-brand text-white font-medium hover:bg-brand-600 disabled:opacity-50"
+          >
+            {loading ? '开始中…' : '开始活动'}
+          </button>
+          <button onClick={onClose} disabled={loading} className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+            稍后处理
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// 当前活动结束后的待续回退选择
+function RecoveryDialog({ entries, onClose, onResume, onFinish, onStartAnother }: {
+  entries: TimeEntry[]
+  onClose: () => void
+  onResume: (entry: TimeEntry) => Promise<void>
+  onFinish: (entry: TimeEntry) => Promise<void>
+  onStartAnother: (entry: TimeEntry) => void
+}) {
+  const [selectedId, setSelectedId] = useState(entries[0]?.id ?? '')
+  const [loading, setLoading] = useState(false)
+  const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0]
+
+  if (!selected) return null
+
+  const run = async (action: (entry: TimeEntry) => Promise<void>) => {
+    setLoading(true)
+    try {
+      await action(selected)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '处理待续活动失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell title="接下来处理哪个活动？" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          当前活动已经结束，暂存中的活动还没有丢失。
+        </p>
+        {entries.length > 1 && (
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">选择待续活动</label>
+            <select value={selected.id} onChange={(e) => setSelectedId(e.target.value)} className="input">
+              {entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.tag?.name} · {entry.note || '无续接备注'}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 p-3">
+          <div className="flex items-center gap-2">
+            <span className="w-3 h-3 rounded-full" style={{ background: selected.tag?.color }} />
+            <span className="font-medium">{selected.tag?.name}</span>
+          </div>
+          <div className="text-sm text-gray-500 dark:text-gray-400 mt-2 whitespace-pre-wrap">{selected.note || '没有留下续接备注'}</div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => void run(onResume)} disabled={loading} className="px-3 py-2.5 rounded-xl bg-blue-500 text-white font-medium hover:bg-blue-600 disabled:opacity-50">继续活动</button>
+          <button onClick={() => onStartAnother(selected)} disabled={loading} className="px-3 py-2.5 rounded-xl bg-brand text-white font-medium hover:bg-brand-600 disabled:opacity-50">开始新活动</button>
+          <button onClick={() => void run(onFinish)} disabled={loading} className="px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50">结束此活动</button>
+          <button onClick={onClose} disabled={loading} className="px-3 py-2.5 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">稍后处理</button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// 终止本次链路：高警戒、原因必填
+function TerminateDialog({ entry, onClose, onConfirm }: {
+  entry: TimeEntry
+  onClose: () => void
+  onConfirm: (reason: string) => Promise<void>
+}) {
+  const [reason, setReason] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const confirm = async () => {
+    if (!reason.trim()) {
+      alert('必须填写终止本次链路的具体原因')
+      return
+    }
+    setLoading(true)
+    try {
+      await onConfirm(reason.trim())
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '终止链路失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell title="终止本次链路" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
+          这会结束当前活动，并一并结束它接管过的上游活动。已有时间记录会保留，但这条链路不会再自动回收。
+        </div>
+        <div className="text-sm text-gray-600 dark:text-gray-300">当前活动：{entry.tag?.name}</div>
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">具体原因 *</label>
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} className="input resize-y" placeholder="例如：需求取消，今天不再继续这组工作" autoFocus />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button onClick={() => void confirm()} disabled={loading} className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">{loading ? '终止中…' : '确认终止链路'}</button>
+          <button onClick={onClose} disabled={loading} className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">取消</button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// 有序 tag 停止选择弹窗
+function StopDialog({ entryId, tag, onClose, onConfirm }: {
+  entryId: string
+  tag: Tag
+  onClose: () => void
+  onConfirm: (pendingResume: boolean, note?: string) => Promise<void>
+}) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = async (pendingResume: boolean) => {
+    if (pendingResume && !note.trim()) {
+      alert('有序标签暂停时需要记一下接下来怎么续')
+      return
+    }
+    setLoading(true)
+    try {
+      await onConfirm(pendingResume, note.trim() || undefined)
+      onClose()
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell onClose={onClose} title="接下来怎么续？">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+          <span className="w-3 h-3 rounded-full" style={{ background: tag.color }} />
+          <span className="font-medium">{tag.name}</span>
+          <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">有序模式</span>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">下一步怎么续（暂停时必填）</label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="写一句回来后马上能接上的提示…"
+            className="input min-h-20 resize-y"
+          />
+        </div>
+        <div className="flex flex-col gap-2 pt-2">
+          <button
+            onClick={() => handleConfirm(true)}
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-blue-500 text-white font-medium hover:bg-blue-600 disabled:opacity-50"
+          >
+            ⏸ 暂停
+          </button>
+          <button
+            onClick={() => handleConfirm(false)}
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-red-500 text-white font-medium hover:bg-red-600 disabled:opacity-50"
+          >
+            ⏹ 直接结束
+          </button>
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="w-full px-4 py-2 text-gray-500 hover:text-gray-700 text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// 续接弹窗
+function ResumeDialog({ entry, onClose, onConfirm }: {
+  entry: TimeEntry
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = async () => {
+    setLoading(true)
+    try {
+      await onConfirm()
+      onClose()
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell onClose={onClose} title={`接续：${entry.tag?.name ?? '任务'}`}>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+          <span className="w-3 h-3 rounded-full" style={{ background: entry.tag?.color }} />
+          <span className="font-medium">{entry.tag?.name}</span>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">接下来怎么续</label>
+          <div className="input min-h-20 whitespace-pre-wrap text-gray-600 dark:text-gray-300">
+            {entry.note || '（没有备注）'}
+          </div>
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 px-4 py-2.5 rounded-xl bg-blue-500 text-white font-medium hover:bg-blue-600 disabled:opacity-50"
+          >
+            {loading ? '接续中…' : '接续此任务'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// 算了弹窗
+function DismissDialog({ entry, onClose, onConfirm }: {
+  entry: TimeEntry
+  onClose: () => void
+  onConfirm: (reason: string) => Promise<void>
+}) {
+  const [reason, setReason] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = async () => {
+    if (!reason.trim()) {
+      alert('请输入算了的原因')
+      return
+    }
+    setLoading(true)
+    try {
+      await onConfirm(reason)
+      onClose()
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell onClose={onClose} title="这件事算了不续了 ——">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+          <span className="w-3 h-3 rounded-full" style={{ background: entry.tag?.color }} />
+          <span className="font-medium">{entry.tag?.name}</span>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">原因 *</label>
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="如：不重要、已完成、计划变更…"
+            className="input"
+          />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 px-4 py-2.5 rounded-xl bg-gray-500 text-white font-medium hover:bg-gray-600 disabled:opacity-50"
+          >
+            {loading ? '处理中…' : '算了'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            取消
+          </button>
+        </div>
+      </div>
     </ModalShell>
   )
 }
