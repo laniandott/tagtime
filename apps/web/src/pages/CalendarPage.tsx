@@ -134,6 +134,18 @@ function formatExternalEventLabel(event: CalendarEvent): string {
   return `${startText}-${endText} ${event.summary}`
 }
 
+function activityDate(todo: Todo): Date | null {
+  const value = todo.completedAt ?? todo.dueDate
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
+function activityIsOnDay(todo: Todo, day: Date): boolean {
+  const date = activityDate(todo)
+  return date ? isSameDay(date, day) : false
+}
+
 // ===== 重叠布局算法（同 Google Calendar）=====
 
 interface LayoutItem {
@@ -216,6 +228,8 @@ export default function CalendarPage() {
   const [showFilter, setShowFilter] = useState(false)
   const [selectedCategoryKeys, setSelectedCategoryKeys] = useState<Set<string> | null>(null)
   const [externalEvents, setExternalEvents] = useState<CalendarEvent[]>([])
+  const [activities, setActivities] = useState<Todo[]>([])
+  const [calendarFilter, setCalendarFilter] = useState<'all' | 'timer' | 'activity'>('all')
   const [dayDetailDate, setDayDetailDate] = useState<Date | null>(null) // 月视图点击日期弹窗
   const [now, setNow] = useState(new Date())
   const [calendarLoading, setCalendarLoading] = useState(false)
@@ -272,9 +286,18 @@ export default function CalendarPage() {
 
   // 标签/分类筛选在前端完成，避免切换筛选器时重复请求。
   const visibleEntries = useMemo(() => {
-    if (!selectedCategoryKeys) return entries
-    return entries.filter((entry) => selectedCategoryKeys.has(entry.tag?.categoryId ?? '_none'))
-  }, [entries, selectedCategoryKeys])
+    const categoryEntries = selectedCategoryKeys
+      ? entries.filter((entry) => selectedCategoryKeys.has(entry.tag?.categoryId ?? '_none'))
+      : entries
+    return calendarFilter === 'activity' ? [] : categoryEntries
+  }, [entries, selectedCategoryKeys, calendarFilter])
+
+  const visibleActivities = useMemo(() => {
+    const categoryActivities = selectedCategoryKeys
+      ? activities.filter((todo) => selectedCategoryKeys.has(todo.categoryId ?? '_none'))
+      : activities
+    return calendarFilter === 'timer' ? [] : categoryActivities
+  }, [activities, selectedCategoryKeys, calendarFilter])
 
   const memosByDay = useMemo(() => {
     const map = new Map<string, Memo[]>()
@@ -296,7 +319,8 @@ export default function CalendarPage() {
       api.timer.list(params),
       api.calendars.events(params),
       api.memos.list(params),
-    ]).then(([entryResult, externalResult, memoResult]) => {
+      api.todos.list(),
+    ]).then(([entryResult, externalResult, memoResult, activityResult]) => {
       if (cancelled) return
       const failures: string[] = []
       if (entryResult.status === 'fulfilled') setEntries(entryResult.value)
@@ -305,6 +329,8 @@ export default function CalendarPage() {
       else failures.push('外部日历')
       if (memoResult.status === 'fulfilled') setMemos(memoResult.value)
       else failures.push('记事')
+      if (activityResult.status === 'fulfilled') setActivities(activityResult.value)
+      else failures.push('活动')
       setCalendarError(failures.length ? `${failures.join('、')}加载失败，请稍后重试` : '')
       setCalendarLoading(false)
     })
@@ -376,7 +402,7 @@ export default function CalendarPage() {
     }, 0)
   }, [visibleEntries, range.from, range.to, now])
 
-  const hasCalendarContent = visibleEntries.length > 0 || externalEvents.length > 0 || memos.length > 0
+  const hasCalendarContent = visibleEntries.length > 0 || visibleActivities.length > 0 || externalEvents.length > 0 || memos.length > 0
   const filterCount = selectedCategoryKeys?.size ?? allCategoryKeys.size
 
   const setQuickCreateForDate = (date: Date, startTime?: Date, endTime?: Date) => {
@@ -433,6 +459,21 @@ export default function CalendarPage() {
               合计 <span className="font-mono font-medium text-gray-500 dark:text-gray-400">{formatDuration(periodTotal)}</span>
             </span>
           )}
+          <div className="flex items-center rounded-full bg-gray-100 dark:bg-gray-800 p-0.5">
+            {([['all', '全部'], ['timer', '计时'], ['activity', '活动']] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setCalendarFilter(value)}
+                className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
+                  calendarFilter === value
+                    ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-100 shadow-sm'
+                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="relative">
             <button
               onClick={() => setShowFilter((open) => !open)}
@@ -535,6 +576,7 @@ export default function CalendarPage() {
         <DayView
           date={currentDate}
           entries={visibleEntries}
+          activities={visibleActivities}
           dayMemos={memosByDay.get(startOfDay(currentDate).toISOString()) ?? []}
           externalEvents={externalEvents}
           now={now}
@@ -548,6 +590,7 @@ export default function CalendarPage() {
           weekStart={startOfWeek(currentDate)}
           selectedDate={currentDate}
           entries={visibleEntries}
+          activities={visibleActivities}
           memosByDay={memosByDay}
           externalEvents={externalEvents}
           now={now}
@@ -558,6 +601,7 @@ export default function CalendarPage() {
         <MonthView
           date={currentDate}
            entriesByDay={entriesByDay}
+           activities={visibleActivities}
            memosByDay={memosByDay}
           externalEvents={externalEvents}
           dayTotal={dayTotal}
@@ -613,6 +657,7 @@ export default function CalendarPage() {
         <DayDetailPopup
           date={dayDetailDate}
           entries={visibleEntries}
+          activities={visibleActivities}
           dayMemos={memosByDay.get(startOfDay(dayDetailDate).toISOString()) ?? []}
           externalEvents={externalEvents}
           onClose={() => setDayDetailDate(null)}
@@ -626,9 +671,10 @@ export default function CalendarPage() {
 
 // ===== 日视图 =====
 
-function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, onCreate, linkedNotes = [], onOpenNote }: {
+function DayView({ date, entries, activities, dayMemos, externalEvents, now, onEntryClick, onCreate, linkedNotes = [], onOpenNote }: {
   date: Date
   entries: TimeEntry[]
+  activities: Todo[]
   dayMemos: Memo[]
   externalEvents: CalendarEvent[]
   now: Date
@@ -642,6 +688,7 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
   const dayEnd = endOfDay(date).getTime()
   const layout = layoutEntries(entries, dayStart, dayEnd)
   const countEntries = entries.filter((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), date))
+  const dayActivities = activities.filter((todo) => activityIsOnDay(todo, date))
   const topExternal = externalEvents.filter((event) => externalEventOverlapsDay(event, dayStart, dayEnd))
   const uniqueTopExternal = topExternal.filter((event, index, list) => list.findIndex((item) => item.summary === event.summary) === index)
 
@@ -691,8 +738,18 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
         </div>
       )}
       {/* 外部 ICS 事件和次数打卡栏，避免占用时间轴 */}
-      {(topExternal.length > 0 || countEntries.length > 0) && (
+      {(dayActivities.length > 0 || topExternal.length > 0 || countEntries.length > 0) && (
         <div className="flex border-b border-gray-200 dark:border-gray-800 px-2 py-1 gap-1 flex-wrap">
+          {dayActivities.map((todo) => (
+            <div
+              key={todo.id}
+              className={`text-[10px] font-semibold rounded px-2 py-0.5 border ${todo.status === 'done' ? 'line-through opacity-60' : ''}`}
+              style={{ color: todo.tag?.color ?? todo.category?.color ?? '#6d5efc', borderColor: todo.tag?.color ?? todo.category?.color ?? '#6d5efc', backgroundColor: `${todo.tag?.color ?? todo.category?.color ?? '#6d5efc'}12` }}
+              title={todo.lateReason ?? undefined}
+            >
+              ◆ {todo.title}
+            </div>
+          ))}
           {countEntries.map((entry) => (
             <button
               key={entry.id}
@@ -807,10 +864,11 @@ function DayView({ date, entries, dayMemos, externalEvents, now, onEntryClick, o
 
 // ===== 周视图 =====
 
-function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents, now, dayTotal, onEntryClick }: {
+function WeekView({ weekStart, selectedDate, entries, activities, memosByDay, externalEvents, now, dayTotal, onEntryClick }: {
   weekStart: Date
   selectedDate: Date
   entries: TimeEntry[]
+  activities: Todo[]
   memosByDay: Map<string, Memo[]>
   externalEvents: CalendarEvent[]
   now: Date
@@ -860,7 +918,8 @@ function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents
           const dE = endOfDay(d).getTime()
           const hasExternal = externalEvents.some((ev) => externalEventOverlapsDay(ev, dS, dE))
           const hasCount = entries.some((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), d))
-          return hasExternal || hasCount
+          const hasActivities = activities.some((todo) => activityIsOnDay(todo, d))
+          return hasExternal || hasCount || hasActivities
         })
         if (!hasTopContent) return null
         return (
@@ -871,10 +930,21 @@ function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents
               const dE = endOfDay(d).getTime()
               const dayExt = externalEvents.filter((ev) => externalEventOverlapsDay(ev, dS, dE))
               const countEntries = entries.filter((entry) => entry.tag?.trackType === 'count' && isSameDay(new Date(entry.startTime), d))
+              const dayActivities = activities.filter((todo) => activityIsOnDay(todo, d))
               const seen = new Set<string>()
               const unique = dayExt.filter((e) => { if (seen.has(e.summary)) return false; seen.add(e.summary); return true })
               return (
                 <div key={d.toISOString()} className="flex-1 min-h-[24px] px-0.5 py-0.5 space-y-0.5">
+                  {dayActivities.slice(0, 2).map((todo) => (
+                    <div
+                      key={todo.id}
+                      className={`text-[9px] font-semibold rounded px-1 py-0.5 border truncate ${todo.status === 'done' ? 'line-through opacity-60' : ''}`}
+                      style={{ color: todo.tag?.color ?? todo.category?.color ?? '#6d5efc', borderColor: todo.tag?.color ?? todo.category?.color ?? '#6d5efc', backgroundColor: `${todo.tag?.color ?? todo.category?.color ?? '#6d5efc'}12` }}
+                      title={todo.title}
+                    >
+                      ◆ {todo.title}
+                    </div>
+                  ))}
                   {countEntries.slice(0, 2).map((entry) => (
                     <button
                       key={entry.id}
@@ -1002,9 +1072,10 @@ function WeekView({ weekStart, selectedDate, entries, memosByDay, externalEvents
 
 // ===== 月视图 =====
 
-function MonthView({ date, entriesByDay, memosByDay, externalEvents, dayTotal, onDayClick }: {
+function MonthView({ date, entriesByDay, activities, memosByDay, externalEvents, dayTotal, onDayClick }: {
   date: Date
   entriesByDay: Map<string, TimeEntry[]>
+  activities: Todo[]
   memosByDay: Map<string, Memo[]>
   externalEvents: CalendarEvent[]
   dayTotal: (d: Date) => number
@@ -1033,6 +1104,7 @@ function MonthView({ date, entriesByDay, memosByDay, externalEvents, dayTotal, o
         {days.map((d) => {
           const key = startOfDay(d).toISOString()
           const dayEntries = entriesByDay.get(key) ?? []
+          const dayActivities = activities.filter((todo) => activityIsOnDay(todo, d))
           const total = dayTotal(d)
           const dayMemos = memosByDay.get(key) ?? []
           const inMonth = isSameMonth(d, date)
@@ -1065,6 +1137,24 @@ function MonthView({ date, entriesByDay, memosByDay, externalEvents, dayTotal, o
                   {uniqueColors.slice(0, 6).map((c, i) => (
                     <span key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: c }} />
                   ))}
+                </div>
+              )}
+              {dayActivities.length > 0 && (
+                <div className="space-y-px mb-1">
+                  {dayActivities.slice(0, 2).map((todo) => {
+                    const color = todo.tag?.color ?? todo.category?.color ?? '#6d5efc'
+                    return (
+                      <div
+                        key={todo.id}
+                        className={`text-[9px] truncate rounded px-1 py-px leading-tight border ${todo.status === 'done' ? 'line-through opacity-60' : ''}`}
+                        style={{ color, borderColor: `${color}55`, backgroundColor: `${color}12` }}
+                        title={todo.title}
+                      >
+                        ◆ {todo.title}
+                      </div>
+                    )
+                  })}
+                  {dayActivities.length > 2 && <div className="text-[8px] text-gray-400 px-1">+{dayActivities.length - 2} 个活动</div>}
                 </div>
               )}
               {/* 全天外部事件 — 彩色横条 banner */}
@@ -1430,9 +1520,10 @@ function QuickCreateModal({ defaultDate, defaultStartTime, defaultEndTime, onClo
 
 // ===== 月视图点击日期详情弹窗 =====
 
-function DayDetailPopup({ date, entries, dayMemos, externalEvents, onClose, onEntryClick }: {
+function DayDetailPopup({ date, entries, activities, dayMemos, externalEvents, onClose, onEntryClick }: {
   date: Date
   entries: TimeEntry[]
+  activities: Todo[]
   dayMemos: Memo[]
   externalEvents: CalendarEvent[]
   onClose: () => void
@@ -1446,6 +1537,7 @@ function DayDetailPopup({ date, entries, dayMemos, externalEvents, onClose, onEn
     const ee = e.endTime ? new Date(e.endTime).getTime() : Date.now()
     return es < dayEnd && ee > dayStart
   }).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+  const dayActivities = activities.filter((todo) => activityIsOnDay(todo, date))
 
   const dayExternal = externalEvents.filter((ev) => externalEventOverlapsDay(ev, dayStart, dayEnd))
   const seenExt = new Set<string>()
@@ -1481,6 +1573,16 @@ function DayDetailPopup({ date, entries, dayMemos, externalEvents, onClose, onEn
           )}
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+          {dayActivities.length > 0 && (
+            <div className="space-y-1 mb-3">
+              <div className="text-[10px] text-gray-400">◆ 活动 ({dayActivities.length})</div>
+              {dayActivities.map((todo) => (
+                <div key={todo.id} className={`text-xs truncate ${todo.status === 'done' ? 'line-through text-gray-400' : 'text-gray-600 dark:text-gray-300'}`} title={todo.lateReason ?? undefined}>
+                  {todo.status === 'done' ? '已完成 · ' : '待完成 · '}{todo.title}
+                </div>
+              ))}
+            </div>
+          )}
           {uniqueExternal.length > 0 && (
             <div className="space-y-1 mb-3">
               {uniqueExternal.map((ev) => {
@@ -1504,7 +1606,7 @@ function DayDetailPopup({ date, entries, dayMemos, externalEvents, onClose, onEn
               ))}
             </div>
           )}
-          {dayEntries.length === 0 && uniqueExternal.length === 0 && dayMemos.length === 0 ? (
+          {dayEntries.length === 0 && dayActivities.length === 0 && uniqueExternal.length === 0 && dayMemos.length === 0 ? (
             <div className="text-center py-6 text-gray-400 text-sm">当日暂无记录</div>
           ) : dayEntries.length === 0 ? (
             <div className="text-center py-4 text-gray-400 text-xs">暂无计时记录</div>

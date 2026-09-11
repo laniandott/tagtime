@@ -94,11 +94,15 @@ async function validateReferences(
   }
 
   const [tag, todo] = await Promise.all([
-    requireTag ? prisma.tag.findUnique({ where: { id: tagId as string }, select: { id: true } }) : null,
+    requireTag ? prisma.tag.findUnique({ where: { id: tagId as string }, select: { id: true, parentId: true } }) : null,
     typeof todoId === 'string' && todoId ? prisma.todo.findUnique({ where: { id: todoId }, select: { id: true } }) : null,
   ])
   if (requireTag && !tag) {
     reply.code(404).send({ error: '标签不存在' })
+    return false
+  }
+  if (requireTag && tag?.parentId) {
+    reply.code(400).send({ error: '计时只能选择一级标签，不能选择二级标签' })
     return false
   }
   if (typeof todoId === 'string' && todoId && !todo) {

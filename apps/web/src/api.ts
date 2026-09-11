@@ -260,18 +260,20 @@ export const api = {
       req<TimeEntry>(`/timer/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   },
   todos: {
-    list: (params?: { status?: string; categoryId?: string }) => {
+    list: (params?: { status?: string; categoryId?: string; tagId?: string; repeatType?: string }) => {
       const q = new URLSearchParams()
       if (params?.status) q.set('status', params.status)
       if (params?.categoryId) q.set('categoryId', params.categoryId)
+      if (params?.tagId) q.set('tagId', params.tagId)
+      if (params?.repeatType) q.set('repeatType', params.repeatType)
       return req<Todo[]>(`/todos?${q}`)
     },
     create: (data: Partial<Todo> & { title: string }) =>
       req<Todo>('/todos', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Partial<Todo>) =>
       req<Todo>(`/todos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    toggle: (id: string) =>
-      req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH' }),
+    toggle: (id: string, lateReason?: string, restoreReason?: string) =>
+      req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ lateReason, restoreReason }) }),
     remove: (id: string) => req(`/todos/${id}`, { method: 'DELETE' }),
   },
   stats: {
@@ -305,7 +307,7 @@ export const api = {
   },
   goals: {
     list: () => req<Goal[]>('/goals'),
-    create: (data: { tagId: string; title: string; type?: string; target?: number; period?: string; periodDays?: number | null }) =>
+    create: (data: { tagId: string; title: string; kind?: string; type?: string; target?: number; period?: string; periodDays?: number | null; deadlineTime?: string | null; deadlineDay?: number | null; deadlineAt?: string | null }) =>
       req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Partial<Goal>) =>
       req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

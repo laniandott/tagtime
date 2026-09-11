@@ -105,8 +105,13 @@ export default function TagsPage() {
               <div className="flex items-center gap-3">
                 <span className="w-3 h-3 rounded-full" style={{ background: tag.color }} />
                 <span className="font-medium">
-                  {tag.icon ? `${tag.icon} ` : ''}{tag.name}
+                  {tag.parentId ? '↳ ' : ''}{tag.icon ? `${tag.icon} ` : ''}{tag.name}
                 </span>
+                {tag.parentId && (
+                  <span className="text-xs text-gray-400">
+                    上级：{tags.find((parent) => parent.id === tag.parentId)?.name ?? '未知'}
+                  </span>
+                )}
                 <span className="text-xs px-2 py-0.5 rounded-full"
                   style={{ background: tag.category?.color ?? '#e5e7eb', color: tag.category ? '#fff' : '#6b7280' }}
                 >
@@ -169,8 +174,11 @@ export default function TagsPage() {
                     <div className="min-w-0">
                       <div className="font-medium text-sm truncate">{goal.title}</div>
                       <div className="text-xs text-gray-400">
-                        {goal.type === 'count' ? '次数' : '时长(分)'} · 每{goal.period === 'daily' ? '日' : goal.period === 'weekly' ? '周' : goal.period === 'monthly' ? '月' : `${goal.periodDays}天`}
-                        {' · '}目标 {goal.target}{goal.type === 'count' ? '次' : '分钟'}
+                        {goal.kind === 'activity'
+                          ? goal.period === 'once'
+                            ? `一次性活动 · ${goal.deadlineAt ? formatGoalDeadline(goal.deadlineAt) : '未设置截止时间'}`
+                            : `${goal.period === 'daily' ? '每日' : '每月'}活动 · ${goal.period === 'daily' ? `每天 ${goal.deadlineTime} 前` : `每月 ${goal.deadlineDay} 日 ${goal.deadlineTime} 前`}`
+                          : `${goal.type === 'count' ? '次数' : '时长(分)'} · 每${goal.period === 'daily' ? '日' : goal.period === 'weekly' ? '周' : goal.period === 'monthly' ? '月' : `${goal.periodDays}天`} · 目标 ${goal.target}${goal.type === 'count' ? '次' : '分钟'}`}
                         {goal.current !== undefined && (
                           <span className={goal.current >= goal.target ? ' text-green-500 ml-1' : ' ml-1'}>
                             {' · '}已完成 {goal.current}
@@ -224,6 +232,7 @@ export default function TagsPage() {
         <TagForm
           tag={editingTag}
           categories={categories}
+          tags={tags}
           onClose={() => setShowTagForm(false)}
           onSaved={() => { setShowTagForm(false); loadAll() }}
         />
@@ -290,9 +299,10 @@ function CategoryForm({ category, onClose, onSaved }: {
   )
 }
 
-function TagForm({ tag, categories, onClose, onSaved }: {
+function TagForm({ tag, categories, tags, onClose, onSaved }: {
   tag: Tag | null
   categories: Category[]
+  tags: Tag[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -300,6 +310,7 @@ function TagForm({ tag, categories, onClose, onSaved }: {
   const [color, setColor] = useState(tag?.color ?? COLORS[0])
   const [icon, setIcon] = useState(tag?.icon ?? '')
   const [categoryId, setCategoryId] = useState(tag?.categoryId ?? categories[0]?.id ?? '')
+  const [parentId, setParentId] = useState(tag?.parentId ?? '')
   const [trackType, setTrackType] = useState<'time' | 'count'>(tag?.trackType ?? 'time')
   const [mode, setMode] = useState<'chaos' | 'ordered'>(tag?.mode ?? 'chaos')
   const [error, setError] = useState('')
@@ -312,9 +323,9 @@ function TagForm({ tag, categories, onClose, onSaved }: {
     setError('')
     try {
       if (tag) {
-        await api.tags.update(tag.id, { name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType, mode })
+        await api.tags.update(tag.id, { name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, parentId: parentId || null, trackType, mode })
       } else {
-        await api.tags.create({ name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, trackType, mode })
+        await api.tags.create({ name: name.trim(), color, icon: icon || null, categoryId: categoryId || null, parentId: parentId || null, trackType, mode })
       }
       onSaved()
     } catch (e) {
@@ -335,6 +346,25 @@ function TagForm({ tag, categories, onClose, onSaved }: {
             {categories.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
+          </select>
+        </Field>
+        <Field label="上级标签">
+          <select
+            value={parentId}
+            onChange={(e) => {
+              const nextParentId = e.target.value
+              setParentId(nextParentId)
+              const parent = tags.find((item) => item.id === nextParentId)
+              if (parent?.categoryId) setCategoryId(parent.categoryId)
+            }}
+            className="input"
+          >
+            <option value="">无上级（一级标签）</option>
+            {tags
+              .filter((item) => !item.parentId && item.id !== tag?.id)
+              .map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
           </select>
         </Field>
         <Field label="记录方式">
@@ -461,6 +491,23 @@ function FormActions({ onCancel, onSave }: { onCancel: () => void; onSave: () =>
   )
 }
 
+function toDateTimeLocal(value: string): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function formatGoalDeadline(value: string): string {
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 // 目标编辑弹窗
 function GoalForm({ goal, tag, onClose, onSaved }: {
   goal: Goal | null
@@ -471,8 +518,12 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
   const [title, setTitle] = useState(goal?.title ?? `每日${tag.name}`)
   const [type, setType] = useState<'count' | 'time'>(goal?.type ?? (tag.trackType === 'count' ? 'count' : 'time'))
   const [target, setTarget] = useState(goal?.target ?? 1)
-  const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>(goal?.period ?? 'daily')
+  const [period, setPeriod] = useState<'once' | 'daily' | 'weekly' | 'monthly' | 'custom'>(goal?.period ?? 'daily')
   const [periodDays, setPeriodDays] = useState(goal?.periodDays ?? 7)
+  const [kind, setKind] = useState<'tracking' | 'activity'>(goal?.kind ?? (tag.parentId ? 'activity' : 'tracking'))
+  const [deadlineTime, setDeadlineTime] = useState(goal?.deadlineTime ?? (tag.parentId ? '08:00' : ''))
+  const [deadlineDay, setDeadlineDay] = useState(goal?.deadlineDay ?? 15)
+  const [deadlineAt, setDeadlineAt] = useState(goal?.deadlineAt ? toDateTimeLocal(goal.deadlineAt) : '')
   const [error, setError] = useState('')
 
   const save = async () => {
@@ -480,15 +531,47 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
       setError('目标名称不能为空')
       return
     }
-    if (!Number.isInteger(target) || target < 1) {
+    if (kind === 'tracking' && (!Number.isInteger(target) || target < 1)) {
       setError('目标值必须是大于 0 的整数')
       return
     }
-    if (period === 'custom' && (!Number.isInteger(periodDays) || periodDays < 1)) {
+    if (kind === 'tracking' && period === 'custom' && (!Number.isInteger(periodDays) || periodDays < 1)) {
       setError('自定义周期天数必须是大于 0 的整数')
       return
     }
-    const data = { title: title.trim(), type, target, period, periodDays: period === 'custom' ? periodDays : null }
+    if (kind === 'activity') {
+      if (!tag.parentId) {
+        setError('活动目标必须建立在二级标签下')
+        return
+      }
+      if (period !== 'once' && period !== 'daily' && period !== 'monthly') {
+        setError('活动目标只支持一次性、每日或每月')
+        return
+      }
+      if (period === 'once' && !deadlineAt) {
+        setError('请设置截止日期和时间')
+        return
+      }
+      if (period !== 'once' && !deadlineTime) {
+        setError('请设置截止时间')
+        return
+      }
+      if (period === 'monthly' && (!Number.isInteger(deadlineDay) || deadlineDay < 1 || deadlineDay > 31)) {
+        setError('每月截止日必须是 1 到 31')
+        return
+      }
+    }
+    const data = {
+      title: title.trim(),
+      kind,
+      type: kind === 'activity' ? 'count' : type,
+      target: kind === 'activity' ? 1 : target,
+      period,
+      periodDays: kind === 'tracking' && period === 'custom' ? periodDays : null,
+      deadlineTime: kind === 'activity' && period !== 'once' ? deadlineTime : null,
+      deadlineDay: kind === 'activity' && period === 'monthly' ? deadlineDay : null,
+      deadlineAt: kind === 'activity' && period === 'once' ? new Date(deadlineAt).toISOString() : null,
+    }
     setError('')
     try {
       if (goal) {
@@ -509,7 +592,25 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：每天喝水8杯"
             className="input" autoFocus />
         </Field>
-        <Field label="目标类型">
+        <Field label="目标用途">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setKind('tracking')}
+              className={`px-4 py-2 rounded-lg text-sm border ${kind === 'tracking' ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+            >
+              统计目标
+            </button>
+            {tag.parentId && (
+              <button
+                onClick={() => { setKind('activity'); setType('count'); setTarget(1) }}
+                className={`px-4 py-2 rounded-lg text-sm border ${kind === 'activity' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 border-current font-medium' : 'text-gray-400 border-gray-300 dark:border-gray-700'}`}
+              >
+                活动目标
+              </button>
+            )}
+          </div>
+        </Field>
+        {kind === 'tracking' && <Field label="目标类型">
           <div className="flex gap-2">
             <button
               onClick={() => setType('count')}
@@ -524,8 +625,8 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
               ⏱ 时长(分钟)
             </button>
           </div>
-        </Field>
-        <Field label={`目标${type === 'count' ? '次数' : '分钟数'}`}>
+        </Field>}
+        {kind === 'tracking' && <Field label={`目标${type === 'count' ? '次数' : '分钟数'}`}>
           <input
             type="number"
             min={1}
@@ -533,16 +634,35 @@ function GoalForm({ goal, tag, onClose, onSaved }: {
             onChange={(e) => setTarget(Number(e.target.value))}
             className="input"
           />
-        </Field>
-        <Field label="统计周期">
-          <select value={period} onChange={(e) => setPeriod(e.target.value as 'daily' | 'weekly' | 'monthly' | 'custom')} className="input">
+        </Field>}
+        <Field label={kind === 'activity' ? '重复周期' : '统计周期'}>
+          <select value={period} onChange={(e) => setPeriod(e.target.value as 'once' | 'daily' | 'weekly' | 'monthly' | 'custom')} className="input">
+            {kind === 'activity' && <option value="once">一次性</option>}
             <option value="daily">每日</option>
-            <option value="weekly">每周</option>
+            {kind === 'tracking' && <option value="weekly">每周</option>}
             <option value="monthly">每月</option>
-            <option value="custom">自定义天数</option>
+            {kind === 'tracking' && <option value="custom">自定义天数</option>}
           </select>
         </Field>
-        {period === 'custom' && (
+        {kind === 'activity' && (
+          <div className="flex gap-4">
+            {period === 'once' ? (
+              <Field label="截止日期和时间">
+                <input type="datetime-local" value={deadlineAt} onChange={(e) => setDeadlineAt(e.target.value)} className="input" />
+              </Field>
+            ) : period === 'monthly' ? (
+              <Field label="每月截止日">
+                <input type="number" min={1} max={31} value={deadlineDay} onChange={(e) => setDeadlineDay(Number(e.target.value))} className="input" />
+              </Field>
+            ) : null}
+            {period !== 'once' && (
+              <Field label="截止时间">
+                <input type="time" value={deadlineTime} onChange={(e) => setDeadlineTime(e.target.value)} className="input" />
+              </Field>
+            )}
+          </div>
+        )}
+        {kind === 'tracking' && period === 'custom' && (
           <Field label="周期天数">
             <input
               type="number"

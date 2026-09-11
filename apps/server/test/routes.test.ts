@@ -739,3 +739,181 @@ test('日历同步：午夜开始的普通事件不应被误判为全天事件',
     await prisma.calendarSubscription.delete({ where: { id: sub.id } }).catch(() => {})
   }
 })
+
+test('活动：超时必须说明原因，完成后生成下一次活动并写入计时点记录', async () => {
+  const category = await prisma.category.create({ data: { name: `活动分类-${Date.now()}` } })
+  const parentTag = await prisma.tag.create({ data: { name: `一级活动-${Date.now()}`, categoryId: category.id } })
+  const tag = await prisma.tag.create({ data: { name: `二级活动-${Date.now()}`, categoryId: category.id, parentId: parentTag.id } })
+  const overdue = await app.inject({
+    method: 'POST',
+    url: '/api/todos',
+    payload: {
+      title: '每日复盘',
+      categoryId: category.id,
+      tagId: tag.id,
+      dueDate: new Date(Date.now() - 60_000).toISOString(),
+      repeatType: 'daily',
+    },
+  })
+  assert.equal(overdue.statusCode, 200)
+  const todo = overdue.json()
+
+  const missingReason = await app.inject({ method: 'PATCH', url: `/api/todos/${todo.id}/toggle`, payload: {} })
+  assert.equal(missingReason.statusCode, 400)
+
+  const running = await prisma.timeEntry.create({
+    data: { tagId: parentTag.id, startTime: new Date(Date.now() - 5 * 60_000) },
+  })
+  const completed = await app.inject({
+    method: 'PATCH',
+    url: `/api/todos/${todo.id}/toggle`,
+    payload: { lateReason: '临时会议占用了原计划时间' },
+  })
+  assert.equal(completed.statusCode, 200)
+  assert.equal(completed.json().status, 'done')
+  assert.equal(completed.json().lateReason, '临时会议占用了原计划时间')
+
+  const linkedEntry = await prisma.timeEntry.findUniqueOrThrow({ where: { id: running.id } })
+  assert.equal(linkedEntry.todoId, null)
+  const point = await prisma.memo.findFirst({
+    where: { timeEntryId: running.id, type: 'point', content: '每日复盘' },
+  })
+  assert.ok(point)
+  assert.equal(point?.tagId, parentTag.id)
+  assert.ok(Math.abs(point!.createdAt.getTime() - new Date(completed.json().completedAt).getTime()) < 1000)
+  const nextTodo = await prisma.todo.findFirst({
+    where: { title: '每日复盘', id: { not: todo.id } },
+    orderBy: { createdAt: 'desc' },
+  })
+  assert.ok(nextTodo)
+  assert.equal(nextTodo?.repeatType, 'daily')
+  assert.equal(nextTodo?.status, 'pending')
+})
+
+test('活动目标：每日截止时间和每月截止日会生成对应活动实例', async () => {
+  const category = await prisma.category.create({ data: { name: `目标活动分类-${Date.now()}` } })
+  const parentTag = await prisma.tag.create({ data: { name: `目标活动一级-${Date.now()}`, categoryId: category.id } })
+  const childTag = await prisma.tag.create({ data: { name: `目标活动二级-${Date.now()}`, categoryId: category.id, parentId: parentTag.id } })
+
+  const daily = await app.inject({
+    method: 'POST',
+    url: '/api/goals',
+    payload: {
+      tagId: childTag.id,
+      title: '每日整理',
+      kind: 'activity',
+      period: 'daily',
+      deadlineTime: '08:00',
+    },
+  })
+  assert.equal(daily.statusCode, 200)
+  assert.equal(daily.json().kind, 'activity')
+  assert.equal(daily.json().deadlineTime, '08:00')
+  const dailyTodo = await prisma.todo.findFirst({ where: { goalId: daily.json().id } })
+  assert.ok(dailyTodo)
+  assert.equal(dailyTodo?.repeatType, 'daily')
+  assert.equal(dailyTodo?.dueDate?.getHours(), 8)
+  assert.equal(dailyTodo?.dueDate?.getMinutes(), 0)
+  assert.equal(dailyTodo?.dueDate?.getSeconds(), 0)
+
+  const dailyToggles = await Promise.all([
+    app.inject({ method: 'PATCH', url: `/api/todos/${dailyTodo!.id}/toggle`, payload: { lateReason: '并发点击测试' } }),
+    app.inject({ method: 'PATCH', url: `/api/todos/${dailyTodo!.id}/toggle`, payload: { lateReason: '并发点击测试' } }),
+  ])
+  assert.equal(dailyToggles[0].statusCode, 200)
+  assert.equal(dailyToggles[1].statusCode, 200)
+  const dailyInstances = await prisma.todo.findMany({ where: { goalId: daily.json().id } })
+  assert.equal(dailyInstances.filter((item) => item.status === 'pending').length, 1)
+  assert.equal(dailyInstances.length, 2)
+
+  const monthly = await app.inject({
+    method: 'POST',
+    url: '/api/goals',
+    payload: {
+      tagId: childTag.id,
+      title: '每月复盘',
+      kind: 'activity',
+      period: 'monthly',
+      deadlineDay: 15,
+      deadlineTime: '23:59',
+    },
+  })
+  assert.equal(monthly.statusCode, 200)
+  assert.equal(monthly.json().deadlineDay, 15)
+  const monthlyTodo = await prisma.todo.findFirst({ where: { goalId: monthly.json().id } })
+  assert.ok(monthlyTodo)
+  assert.equal(monthlyTodo?.repeatType, 'monthly')
+  assert.equal(monthlyTodo?.dueDate?.getDate(), 15)
+  assert.equal(monthlyTodo?.dueDate?.getHours(), 23)
+  assert.equal(monthlyTodo?.dueDate?.getMinutes(), 59)
+
+  const once = await app.inject({
+    method: 'POST',
+    url: '/api/goals',
+    payload: {
+      tagId: childTag.id,
+      title: '一次性提交',
+      kind: 'activity',
+      period: 'once',
+      deadlineAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    },
+  })
+  assert.equal(once.statusCode, 200)
+  assert.equal(once.json().period, 'once')
+  const onceTodo = await prisma.todo.findFirst({ where: { goalId: once.json().id } })
+  assert.ok(onceTodo)
+  assert.equal(onceTodo?.repeatType, 'none')
+  const onceDone = await app.inject({ method: 'PATCH', url: `/api/todos/${onceTodo!.id}/toggle`, payload: {} })
+  assert.equal(onceDone.statusCode, 200)
+  const missingRestoreReason = await app.inject({ method: 'PATCH', url: `/api/todos/${onceTodo!.id}/toggle`, payload: {} })
+  assert.equal(missingRestoreReason.statusCode, 400)
+  const restored = await app.inject({ method: 'PATCH', url: `/api/todos/${onceTodo!.id}/toggle`, payload: { restoreReason: '刚才误点了完成' } })
+  assert.equal(restored.statusCode, 200)
+  assert.equal(restored.json().status, 'pending')
+  assert.equal(restored.json().restoreReason, '刚才误点了完成')
+  const doneAgain = await app.inject({ method: 'PATCH', url: `/api/todos/${onceTodo!.id}/toggle`, payload: {} })
+  assert.equal(doneAgain.statusCode, 200)
+  assert.equal(doneAgain.json().status, 'done')
+  assert.equal(doneAgain.json().restoreReason, '刚才误点了完成')
+  const restoreByPut = await app.inject({ method: 'PUT', url: `/api/todos/${onceTodo!.id}`, payload: { status: 'pending' } })
+  assert.equal(restoreByPut.statusCode, 400)
+  const reopen = await app.inject({ method: 'PUT', url: `/api/todos/${onceTodo!.id}`, payload: { status: 'pending' } })
+  assert.equal(reopen.statusCode, 400)
+  assert.equal((await prisma.todo.findMany({ where: { goalId: once.json().id } })).length, 1)
+
+  const goalIds = [daily.json().id, monthly.json().id, once.json().id]
+  await prisma.todo.deleteMany({ where: { goalId: { in: goalIds } } })
+  await prisma.goal.deleteMany({ where: { id: { in: goalIds } } })
+  await prisma.tag.delete({ where: { id: childTag.id } })
+  await prisma.tag.delete({ where: { id: parentTag.id } })
+  await prisma.category.delete({ where: { id: category.id } })
+})
+
+test('标签层级：只能把一级标签设为上级，二级标签不能直接计时', async () => {
+  const category = await prisma.category.create({ data: { name: `层级分类-${Date.now()}` } })
+  const root = await app.inject({
+    method: 'POST',
+    url: '/api/tags',
+    payload: { name: `一级-${Date.now()}`, categoryId: category.id },
+  })
+  assert.equal(root.statusCode, 200)
+  const parent = root.json()
+
+  const child = await app.inject({
+    method: 'POST',
+    url: '/api/tags',
+    payload: { name: `二级-${Date.now()}`, parentId: parent.id },
+  })
+  assert.equal(child.statusCode, 200)
+  assert.equal(child.json().parentId, parent.id)
+
+  const invalidTimer = await app.inject({ method: 'POST', url: '/api/timer/start', payload: { tagId: child.json().id } })
+  assert.equal(invalidTimer.statusCode, 400)
+
+  const invalidActivity = await app.inject({
+    method: 'POST',
+    url: '/api/todos',
+    payload: { title: '不能挂一级标签', categoryId: category.id, tagId: parent.id },
+  })
+  assert.equal(invalidActivity.statusCode, 400)
+})

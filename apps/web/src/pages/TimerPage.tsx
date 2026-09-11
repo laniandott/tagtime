@@ -202,9 +202,9 @@ export default function TimerPage() {
   // 按分类分组标签
   const tagsByCategory = categories.map((cat) => ({
     category: cat,
-    tags: tags.filter((t) => t.categoryId === cat.id),
+    tags: tags.filter((t) => t.categoryId === cat.id && !t.parentId),
   }))
-  const uncategorized = tags.filter((t) => !t.categoryId)
+  const uncategorized = tags.filter((t) => !t.categoryId && !t.parentId)
 
   // 按结束时间倒序排序（进行中的在最上方，即 endTime 为 null 当作无穷大，已结束的按 endTime 倒序）
   const sortedRecent = useMemo(() => [...recent]
@@ -1437,14 +1437,14 @@ function ManualEntryModal({ tags, categories, todos, onClose, onSaved }: {
             <option value="">请选择…</option>
             {categories.map((c) => (
               <optgroup key={c.id} label={c.name}>
-                {tags.filter((t) => t.categoryId === c.id).map((t) => (
+                {tags.filter((t) => t.categoryId === c.id && !t.parentId).map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </optgroup>
             ))}
-            {tags.filter((t) => !t.categoryId).length > 0 && (
+            {tags.filter((t) => !t.categoryId && !t.parentId).length > 0 && (
               <optgroup label="未分类">
-                {tags.filter((t) => !t.categoryId).map((t) => (
+                {tags.filter((t) => !t.categoryId && !t.parentId).map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </optgroup>
@@ -1930,7 +1930,7 @@ function ActivityPickerDialog({ tags, todos, interruptedFromId, onClose, onStart
   onClose: () => void
   onStart: (tagId: string, todoId?: string) => Promise<void>
 }) {
-  const timeTags = tags.filter((tag) => tag.trackType === 'time')
+  const timeTags = tags.filter((tag) => tag.trackType === 'time' && !tag.parentId)
   const [tagId, setTagId] = useState(timeTags[0]?.id ?? '')
   const [todoId, setTodoId] = useState('')
   const [loading, setLoading] = useState(false)

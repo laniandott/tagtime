@@ -15,10 +15,12 @@ export interface Tag {
   color: string
   icon: string | null
   categoryId: string | null
+  parentId: string | null
   trackType: 'time' | 'count'
   mode: 'chaos' | 'ordered'
   sortOrder: number
   category?: Category | null
+  parent?: Tag | null
 }
 
 export interface Attachment {
@@ -71,7 +73,14 @@ export interface Todo {
   priority: number
   dueDate: string | null
   categoryId: string | null
+  tagId: string | null
+  goalId: string | null
+  repeatType: 'none' | 'daily' | 'weekly' | 'monthly'
+  completedAt: string | null
+  lateReason: string | null
+  restoreReason: string | null
   category?: Category | null
+  tag?: Tag | null
   _count?: { timeEntries: number }
   createdAt: string
   updatedAt: string
@@ -111,10 +120,14 @@ export interface Goal {
   id: string
   tagId: string
   title: string
+  kind: 'tracking' | 'activity'
   type: 'time' | 'count'
   target: number
-  period: 'daily' | 'weekly' | 'monthly' | 'custom'
+  period: 'once' | 'daily' | 'weekly' | 'monthly' | 'custom'
   periodDays: number | null
+  deadlineTime: string | null
+  deadlineDay: number | null
+  deadlineAt: string | null
   active: boolean
   createdAt: string
   updatedAt: string
