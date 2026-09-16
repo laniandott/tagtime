@@ -1,0 +1,11 @@
+node_modules
+dist
+*.log
+.DS_Store
+data
+.env
+.env.local
+
+# 开发数据库与构建缓存
+*.db
+*.tsbuildinfo

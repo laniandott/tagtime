@@ -1,0 +1,340 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
+}
+
+/* 表单输入框工具类 */
+.input {
+  @apply w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-700 rounded-full;
+}
+
+/* 全屏常显时钟激活时：隐藏页头、锁定滚动、纯黑背景，避免状态栏区域透出页面内容 */
+body.fullscreen-clock-active {
+  overflow: hidden;
+  background: #000;
+}
+body.fullscreen-clock-active header {
+  display: none;
+}
+
+/* 笔记 Markdown 预览排版 */
+.prose-preview h1,
+.prose-preview h2,
+.prose-preview h3,
+.prose-preview h4,
+.prose-preview h5,
+.prose-preview h6 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 1em 0 0.4em;
+}
+.prose-preview h1 { font-size: 1.4rem; }
+.prose-preview h2 { font-size: 1.2rem; }
+.prose-preview h3 { font-size: 1.05rem; }
+.prose-preview h4 { font-size: 0.95rem; }
+.prose-preview h5,
+.prose-preview h6 { font-size: 0.875rem; }
+.prose-preview p { margin: 0.5em 0; line-height: 1.7; }
+.prose-preview ul,
+.prose-preview ol { padding-left: 1.4em; margin: 0.5em 0; }
+.prose-preview ul { list-style: disc; }
+.prose-preview ol { list-style: decimal; }
+.prose-preview blockquote {
+  border-left: 3px solid rgb(167 139 250);
+  padding-left: 0.8em;
+  margin: 0.6em 0;
+  color: rgb(107 114 128);
+}
+.dark .prose-preview blockquote { color: rgb(156 163 175); }
+.prose-preview code {
+  background: rgb(243 244 246);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+  font-size: 0.9em;
+}
+.dark .prose-preview code { background: rgb(31 41 55); }
+.prose-preview pre {
+  background: rgb(249 250 251);
+  padding: 0.8em;
+  border-radius: 0.5em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.prose-preview pre code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+.dark .prose-preview pre { background: rgb(17 24 39); }
+.prose-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6em 0;
+}
+.prose-preview th,
+.prose-preview td {
+  border: 1px solid rgb(229 231 235);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.dark .prose-preview th,
+.dark .prose-preview td { border-color: rgb(31 41 55); }
+.prose-preview a { color: #6d5efc; text-decoration: underline; overflow-wrap: anywhere; }
+.prose-preview img { max-width: 100%; border-radius: 0.5em; }
+.prose-preview hr { border: 0; border-top: 1px solid rgb(229 231 235); margin: 1.25em 0; }
+.dark .prose-preview hr { border-color: rgb(55 65 81); }
+.prose-preview input[type='checkbox'] { margin-right: 0.45em; accent-color: #6d5efc; }
+.prose-preview li.task-list-item { list-style: none; margin-left: -1.2em; }
+.prose-preview strong { font-weight: 700; }
+.prose-preview del { color: rgb(107 114 128); }
+.prose-preview .math-inline {
+  display: inline;
+}
+.prose-preview .katex-display {
+  max-width: 100%;
+  margin: 0.9em 0;
+  padding: 0.25em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Atomic Editor live-preview bridge: keep its CM6 surface inside the Vault card. */
+.vault-page .atomic-cm-editor {
+  --atomic-editor-fg: rgb(31 41 55);
+  --atomic-editor-fg-muted: rgb(107 114 128);
+  --atomic-editor-fg-faint: rgb(156 163 175);
+  --atomic-editor-bg: transparent;
+  --atomic-editor-bg-panel: transparent;
+  --atomic-editor-bg-surface: rgb(249 250 251);
+  --atomic-editor-border: rgb(229 231 235);
+  --atomic-editor-accent: #6d5efc;
+  --atomic-editor-accent-bright: #8b7cf6;
+  --atomic-editor-accent-soft: #c4b5fd;
+  --atomic-editor-link: #6d5efc;
+  --atomic-editor-link-hover: #5748e8;
+  --atomic-editor-code-bg: rgb(249 250 251);
+  background: transparent;
+}
+.vault-page .atomic-cm-editor .cm-editor,
+.vault-page .atomic-cm-editor .cm-scroller {
+  min-height: 55vh;
+  background: transparent;
+}
+.vault-page .atomic-cm-editor .cm-scroller {
+  overflow: auto;
+}
+.dark .vault-page .atomic-cm-editor {
+  --atomic-editor-fg: rgb(243 244 246);
+  --atomic-editor-fg-muted: rgb(156 163 175);
+  --atomic-editor-fg-faint: rgb(107 114 128);
+  --atomic-editor-bg-surface: rgb(31 41 55);
+  --atomic-editor-border: rgb(55 65 81);
+  --atomic-editor-accent-soft: #8b7cf6;
+  --atomic-editor-code-bg: rgb(17 24 39);
+}
+.tagtime-atomic-math {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+}
+.tagtime-atomic-math-display {
+  display: block;
+  padding: 0.25em 0;
+  text-align: center;
+}
+
+/* ══════════════ CodeMirror 6 Markdown Live Preview ══════════════ */
+
+/* 编辑器容器与整体外观 */
+.tagtime-editor {
+  min-height: 48vh;
+  font-size: 0.9rem;
+  overflow: hidden;
+}
+@media (min-width: 768px) {
+  .tagtime-editor {
+    min-height: 60vh;
+  }
+}
+.tagtime-editor .cm-editor {
+  height: 100%;
+}
+.tagtime-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.tagtime-editor .cm-scroller {
+  font-family: inherit;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+.tagtime-editor .cm-content {
+  max-width: 100%;
+  caret-color: currentColor;
+  padding: 0.5rem 0.25rem;
+}
+
+/* 行级块样式：标题 / 引用 / 代码块 */
+.tagtime-editor .cm-line.cm-heading-1 { font-size: 1.4rem; font-weight: 700; }
+.tagtime-editor .cm-line.cm-heading-2 { font-size: 1.2rem; font-weight: 700; }
+.tagtime-editor .cm-line.cm-heading-3 { font-size: 1.05rem; font-weight: 700; }
+.tagtime-editor .cm-line.cm-heading-4,
+.tagtime-editor .cm-line.cm-heading-5,
+.tagtime-editor .cm-line.cm-heading-6 { font-weight: 700; }
+.tagtime-editor .cm-line.cm-blockquote {
+  border-left: 3px solid rgb(167 139 250);
+  padding-left: 0.6em;
+  color: rgb(107 114 128);
+}
+.dark .tagtime-editor .cm-line.cm-blockquote { color: rgb(156 163 175); }
+.tagtime-editor .cm-line.cm-code-block {
+  background: rgb(249 250 251);
+  padding: 0.1em 0.4em;
+}
+.dark .tagtime-editor .cm-line.cm-code-block { background: rgb(17 24 39); }
+
+/* 列表行：标记替换为圆点后保持悬挂缩进 */
+.tagtime-editor .cm-line.cm-list {
+  padding-left: 1.1em;
+  text-indent: -1.1em;
+}
+.tagtime-editor .cm-list-marker {
+  display: inline-block;
+  width: 1.1em;
+  text-align: right;
+  margin-right: 0.35em;
+  color: rgb(156 163 175);
+}
+.tagtime-editor .cm-list-marker-ordered {
+  font-variant-numeric: tabular-nums;
+}
+.tagtime-editor .cm-task-marker {
+  display: inline-block;
+  width: 1.1em;
+  margin-right: 0.35em;
+  text-align: right;
+  color: #6d5efc;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tagtime-editor .cm-table {
+  display: block;
+  max-width: 100%;
+  margin: 0.7em 0;
+  overflow-x: auto;
+}
+.tagtime-editor .cm-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.tagtime-editor .cm-table th,
+.tagtime-editor .cm-table td {
+  border: 1px solid rgb(229 231 235);
+  padding: 0.35em 0.65em;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.tagtime-editor .cm-table th {
+  background: rgb(249 250 251);
+  font-weight: 700;
+}
+.dark .tagtime-editor .cm-table th,
+.dark .tagtime-editor .cm-table td { border-color: rgb(55 65 81); }
+.dark .tagtime-editor .cm-table th { background: rgb(31 41 55); }
+
+.tagtime-editor .cm-code-block-widget {
+  display: block;
+  max-width: 100%;
+  margin: 0.7em 0;
+  padding: 0.75em 0.9em;
+  overflow-x: auto;
+  border-radius: 0.45em;
+  background: rgb(249 250 251);
+  white-space: pre;
+}
+.tagtime-editor .cm-code-block-widget code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9em;
+}
+.tagtime-editor .cm-code-line {
+  display: inline;
+}
+.dark .tagtime-editor .cm-code-block-widget { background: rgb(17 24 39); }
+
+/* 行内强调 / 代码 / 链接 / wiki 链接 */
+.tagtime-editor .cm-strong { font-weight: 800; }
+.tagtime-editor .cm-em { font-style: italic; }
+.tagtime-editor .cm-strike { text-decoration: line-through; color: rgb(107 114 128); }
+.tagtime-editor .cm-inline-code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9em;
+  background: rgb(243 244 246);
+  padding: 0.05em 0.3em;
+  border-radius: 0.3em;
+}
+.dark .tagtime-editor .cm-inline-code { background: rgb(31 41 55); }
+.tagtime-editor .cm-link,
+.tagtime-editor .cm-wikilink {
+  color: #6d5efc;
+  text-decoration: underline;
+}
+
+/* KaTeX 公式 widget */
+.tagtime-editor .cm-math { color: inherit; }
+.tagtime-editor .cm-math-display {
+  display: block;
+  max-width: 100%;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.tagtime-editor .cm-math-display .katex-display { margin: 0; }
+.tagtime-editor .cm-math-inline { display: inline; }
+
+/* 图片 widget */
+.tagtime-editor .cm-image img {
+  max-width: 100%;
+  border-radius: 0.5em;
+  display: block;
+}
+
+/* 分隔线：保留可点击的源码定位锚点 */
+.tagtime-editor .cm-line.cm-hr {
+  margin: 0;
+  padding: 0;
+  min-height: 1px;
+}
+.tagtime-editor .cm-hr-widget {
+  display: inline-block;
+  width: 100%;
+  height: 1px;
+  vertical-align: middle;
+  border-top: 1px solid rgb(229 231 235);
+  cursor: text;
+}
+.dark .tagtime-editor .cm-hr-widget { border-color: rgb(55 65 81); }

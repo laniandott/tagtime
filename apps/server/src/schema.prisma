@@ -1,0 +1,269 @@
+// TagTime - Tag-based time tracker
+// 数据模型：Category(分类) -> Tag(标签) -> TimeEntry(时间记录)
+//          Todo(待办) 可选关联 Category 和 TimeEntry
+//          Goal(目标) 关联 Tag，支持时长型/次数型习惯追踪
+
+generator client {
+  provider   = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// 标签分类：用户自定义的大类，如 日常/工作/宝宝
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#6d5efc")
+  icon      String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags  Tag[]
+  todos Todo[]
+}
+
+/// 标签：归属某个分类，如 日常/吃饭、工作/编码
+/// trackType: "time"=时长计时（默认），"count"=次数打卡
+/// mode: "chaos"=混沌（只能中止），"ordered"=有序（可暂停）
+model Tag {
+  id         String   @id @default(cuid())
+  name       String
+  color      String   @default("#6d5efc")
+  icon       String?
+  categoryId String?
+  parentId   String?
+  trackType  String   @default("time") // time | count
+  mode       String   @default("chaos") // chaos | ordered
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  parent     Tag?      @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children   Tag[]     @relation("TagHierarchy")
+  timeEntries TimeEntry[]
+  todos      Todo[]
+  goals      Goal[]
+  memos      Memo[]
+
+  @@index([parentId])
+  @@unique([name, categoryId])
+}
+
+/// 时间记录：一次计时的开始与结束。endTime 为 null 表示进行中
+/// pendingResume: 是否处于"待续"状态（暂停后等待续接）
+/// dismissed: "算了"后标记为 true，统计时排除
+/// dismissReason: "算了"时强制填入的原因
+/// resumedFromId: 指回被暂停的前一段，形成续接链
+model TimeEntry {
+  id            String    @id @default(cuid())
+  startTime     DateTime  @default(now())
+  endTime       DateTime?
+  note          String?
+  tagId         String
+  todoId        String?
+  pendingResume Boolean   @default(false)
+  dismissed     Boolean   @default(false)
+  dismissReason String?
+  resumedFromId String?
+  interruptedFromId String?
+
+  tag           Tag         @relation(fields: [tagId], references: [id], onDelete: Restrict)
+  todo          Todo?       @relation(fields: [todoId], references: [id], onDelete: SetNull)
+  memos         Memo[]
+  resumedFrom   TimeEntry?  @relation("ResumeChain", fields: [resumedFromId], references: [id], onDelete: SetNull)
+  resumes       TimeEntry[] @relation("ResumeChain")
+  interruptedFrom TimeEntry? @relation("InterruptChain", fields: [interruptedFromId], references: [id], onDelete: SetNull)
+  interrupts     TimeEntry[] @relation("InterruptChain")
+
+  createdAt DateTime @default(now())
+
+  @@index([tagId])
+  @@index([startTime])
+  @@index([todoId])
+  @@index([tagId, pendingResume])
+  @@index([resumedFromId])
+  @@index([interruptedFromId])
+}
+
+/// 待办事项：可关联分类，可关联时间记录
+model Todo {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  status      String   @default("pending") // pending | done
+  priority    Int      @default(0)          // 0=普通 1=重要 2=紧急
+  dueDate     DateTime?
+  categoryId  String?
+  tagId       String?
+  goalId      String?
+  repeatType  String   @default("none")    // none | daily | weekly | monthly
+  completedAt DateTime?
+  lateReason  String?
+  restoreReason String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category    Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  tag         Tag?        @relation(fields: [tagId], references: [id], onDelete: SetNull)
+  goal        Goal?       @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  timeEntries TimeEntry[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([tagId])
+  @@index([goalId])
+  @@index([dueDate])
+  @@index([completedAt])
+}
+
+/// 目标（习惯养成）：关联标签，支持时长型或次数型
+/// type: "time"=时长目标(分钟)，"count"=次数目标
+/// period: "daily"=每日，"weekly"=每周，"monthly"=每月
+/// periodDays: 自定义周期天数（当 period="custom" 时使用）
+model Goal {
+  id          String   @id @default(cuid())
+  tagId       String
+  title       String
+  kind        String   @default("tracking") // tracking | activity
+  type        String   @default("count") // time | count
+  target      Int      @default(1)        // 目标值（次数 或 分钟数）
+  period      String   @default("daily")  // daily | weekly | monthly | custom
+  periodDays  Int?                         // 自定义周期天数
+  deadlineTime String?                      // 活动截止时间，HH:mm
+  deadlineDay  Int?                         // 月度活动截止日，1-31
+  deadlineAt   DateTime?                    // 一次性活动的指定截止时间
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tag         Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  todos       Todo[]
+
+  @@index([tagId])
+  @@index([active])
+}
+
+/// 记事/日记：与 TimeEntry 建立勾稽关联，支持富文本与多媒体附件
+/// type: "point"=点记录（计时过程中的里程碑节点），"diary"=日记/随感（随笔图文记录）
+model Memo {
+  id          String   @id @default(cuid())
+  content     String   // 记事/日记内容
+  type        String   @default("diary") // point | diary
+  timeEntryId String?  // 关联的具体计时记录
+  tagId       String?  // 可选关联标签
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  timeEntry   TimeEntry?   @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+  tag         Tag?         @relation(fields: [tagId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@index([timeEntryId])
+  @@index([createdAt])
+  @@index([tagId])
+  @@index([type])
+}
+
+/// 附件：图片或视频文件
+model Attachment {
+  id        String   @id @default(cuid())
+  memoId    String
+  filename  String   // 原始文件名
+  path      String   // 相对访问路径 /uploads/xxx.jpg
+  mimeType  String   // image/png, video/mp4 等
+  size      Int      // 文件大小(bytes)
+  createdAt DateTime @default(now())
+
+  memo      Memo     @relation(fields: [memoId], references: [id], onDelete: Cascade)
+
+  @@index([memoId])
+}
+
+/// 外部 ICS 日历订阅
+model CalendarSubscription {
+  id          String    @id @default(cuid())
+  name        String                          // 显示名称
+  url         String                          // ICS 源 URL
+  color       String    @default("#e74c3c")   // 显示颜色
+  active      Boolean   @default(true)
+  lastSyncAt  DateTime?                       // 上次同步时间
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  events CalendarEvent[]
+}
+
+/// 从 ICS 解析出的事件缓存
+model CalendarEvent {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  uid            String   // ICS 事件 UID
+  summary        String   // 事件标题
+  description    String?  // 事件描述
+  location       String?  // 地点
+  dtstart        DateTime // 开始时间
+  dtend          DateTime? // 结束时间
+  allday         Boolean  @default(false) // 是否全天事件
+  rrule          String?  // 重复规则
+  subscription   CalendarSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([dtstart])
+  @@unique([subscriptionId, uid])
+}
+
+/// 笔记：正文以服务器 Markdown 文件为准，本表只存索引与关系
+model Note {
+  id          String    @id @default(cuid())
+  path        String    @unique // 相对 notes/ 的路径，如 时间管理.md
+  title       String    // 显示标题
+  titleKey    String    @unique // 规范化后的标题，用于链接解析
+  contentHash String    // 文件 sha256
+  revision    Int       @default(0) // 每次保存递增，用于冲突校验
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  outLinks    NoteLink[] @relation("OutLinks")
+  inLinks     NoteLink[] @relation("InLinks")
+  entityLinks NoteEntityLink[]
+}
+
+/// 笔记双向链接：source -> target（target 不存在时视为未解析）
+model NoteLink {
+  id           String   @id @default(cuid())
+  sourceNoteId String
+  targetNoteId String?  // 目标不存在时为 null → 未解析
+  targetTitle  String   // 保留原始标题，即使目标未建
+  targetKey    String   // 规范化后的目标标题
+  linkText     String   // [[名|别名]] 中的别名
+  isResolved   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  source Note  @relation("OutLinks", fields: [sourceNoteId], references: [id], onDelete: Cascade)
+  target Note? @relation("InLinks", fields: [targetNoteId], references: [id], onDelete: SetNull)
+
+  @@index([sourceNoteId])
+  @@index([targetNoteId])
+  @@unique([sourceNoteId, targetKey])
+}
+
+/// 笔记 ↔ TagTime 实体关联（tag/todo/date/memo 特殊链接）
+model NoteEntityLink {
+  id        String   @id @default(cuid())
+  noteId    String
+  type      String   // tag | todo | date | memo
+  entityKey String   // tag:标签名, todo:标题, date:YYYY-MM-DD, memo:日记id
+  linkText  String   // [[type:key|别名]] 中的别名
+  createdAt DateTime @default(now())
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, type])
+  @@unique([noteId, type, entityKey])
+}
+
