@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { Category, Tag, TimeEntry } from './types'
 import { api } from './api'
+import { enqueuePending, runSync } from './sync'
+
+function localId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
 
 interface AppState {
   categories: Category[]
@@ -162,22 +167,38 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   start: async (tagId, note, todoId, interruptedFromId) => {
-    const res = await api.timer.start({ tagId, note, todoId, interruptedFromId })
-    const { serverTime, ...entry } = res
-    const clockOffset = Date.now() - new Date(serverTime).getTime()
-    const newRunning = [...get().running, entry]
-    set({ running: newRunning, clockOffset })
-    syncNativeNotification(newRunning)
-    await get().loadPending()
+    try {
+      const res = await api.timer.start({ tagId, note, todoId, interruptedFromId })
+      const { serverTime, ...entry } = res
+      const clockOffset = Date.now() - new Date(serverTime).getTime()
+      const newRunning = [...get().running, entry]
+      set({ running: newRunning, clockOffset })
+      syncNativeNotification(newRunning)
+      await get().loadPending()
+      enqueuePending({ timeEntries: [entry] })
+      void runSync()
+    } catch {
+      const entry: TimeEntry = { id: localId(), startTime: new Date().toISOString(), endTime: null, note: note ?? null, tagId, todoId: todoId ?? null, pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: null, interruptedFromId: interruptedFromId ?? null }
+      const newRunning = [...get().running, entry]
+      set({ running: newRunning })
+      enqueuePending({ timeEntries: [entry] })
+    }
   },
 
   stop: async (id, note, pendingResume) => {
-    const stopped = await api.timer.stop(id, note, pendingResume)
+    let stopped: TimeEntry
+    try { stopped = await api.timer.stop(id, note, pendingResume) } catch {
+      const current = get().running.find((entry) => entry.id === id)
+      if (!current) throw new Error('计时记录不存在')
+      stopped = { ...current, endTime: new Date().toISOString(), note: note ?? current.note, pendingResume: pendingResume === true }
+    }
     const newRunning = get().running.filter((e) => e.id !== id)
     set({ running: newRunning })
     syncNativeNotification(newRunning)
-    await get().loadPending()
-    await get().loadAll()
+    await get().loadPending().catch(() => {})
+    await get().loadAll().catch(() => {})
+    enqueuePending({ timeEntries: [stopped] })
+    void runSync()
     return stopped
   },
 
