@@ -924,6 +924,7 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   const stamp = Date.now().toString()
   const ids = {
     category: `sync-category-${stamp}`,
+    parentTag: `sync-parent-tag-${stamp}`,
     tag: `sync-tag-${stamp}`,
     goal: `sync-goal-${stamp}`,
     todo: `sync-todo-${stamp}`,
@@ -934,7 +935,10 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   const payload = {
     cursor: 0,
     categories: [{ id: ids.category, name: `同步分类-${stamp}` }],
-    tags: [{ id: ids.tag, name: `同步标签-${stamp}`, categoryId: ids.category }],
+    tags: [
+      { id: ids.tag, name: `同步子标签-${stamp}`, categoryId: ids.category, parentId: ids.parentTag },
+      { id: ids.parentTag, name: `同步父标签-${stamp}`, categoryId: ids.category },
+    ],
     goals: [{ id: ids.goal, tagId: ids.tag, title: '同步目标', kind: 'tracking', type: 'count', target: 1, period: 'daily' }],
     todos: [{ id: ids.todo, title: '同步待办', status: 'pending', tagId: ids.tag, goalId: ids.goal }],
     timeEntries: [{ id: ids.entry, startTime: now, endTime: now, tagId: ids.tag, todoId: ids.todo }],
@@ -944,6 +948,7 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   const first = await app.inject({ method: 'POST', url: '/api/sync', payload })
   assert.equal(first.statusCode, 200)
   assert.equal(await prisma.category.count({ where: { id: ids.category } }), 1)
+  assert.equal(await prisma.tag.count({ where: { id: ids.parentTag } }), 1)
   assert.equal(await prisma.tag.count({ where: { id: ids.tag } }), 1)
   assert.equal(await prisma.goal.count({ where: { id: ids.goal } }), 1)
   assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 1)
@@ -960,7 +965,10 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
     payload: {
       cursor: repeat.json().cursor,
       categories: [{ id: ids.category, deleted: true }],
-      tags: [{ id: ids.tag, deleted: true }],
+      tags: [
+        { id: ids.tag, parentId: ids.parentTag, deleted: true },
+        { id: ids.parentTag, deleted: true },
+      ],
       goals: [{ id: ids.goal, deleted: true }],
       todos: [{ id: ids.todo, deleted: true }],
       timeEntries: [{ id: ids.entry, deleted: true }],
@@ -969,6 +977,7 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   })
   assert.equal(deleted.statusCode, 200)
   assert.equal(await prisma.category.count({ where: { id: ids.category } }), 0)
+  assert.equal(await prisma.tag.count({ where: { id: ids.parentTag } }), 0)
   assert.equal(await prisma.tag.count({ where: { id: ids.tag } }), 0)
   assert.equal(await prisma.goal.count({ where: { id: ids.goal } }), 0)
   assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 0)

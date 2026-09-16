@@ -20,6 +20,7 @@ import type {
   EntityLinkType,
   LinkedNoteEntry,
 } from './types'
+import { enqueuePending, loadCachedSnapshot, loadPendingQueue, runSync } from './sync'
 
 export function getServerHost(): string {
   if (typeof localStorage !== 'undefined') {
@@ -212,23 +213,100 @@ export async function reqWithRetry<T>(path: string, opts?: RequestOptions): Prom
 // 保持现有 API 方法调用兼容，同时让所有请求经过超时与安全重试逻辑。
 export const req = reqWithRetry
 
+type OfflineBucket = 'categories' | 'tags' | 'goals' | 'todos' | 'timeEntries' | 'memos'
+
+function localId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isOfflineError(error: unknown): boolean {
+  return !(error instanceof ApiError)
+}
+
+function cachedBucket<T extends { id: string }>(bucket: OfflineBucket): T[] {
+  const map = new Map<string, T>()
+  const snapshot = loadCachedSnapshot()?.[bucket]
+  if (Array.isArray(snapshot)) for (const item of snapshot) {
+    if (item && typeof item.id === 'string') map.set(item.id, item as T)
+  }
+  const pending = loadPendingQueue()[bucket]
+  if (Array.isArray(pending)) for (const item of pending) {
+    if (!item || typeof item.id !== 'string') continue
+    if (item.deleted) map.delete(item.id)
+    else map.set(item.id, { ...map.get(item.id), ...item } as T)
+  }
+  return Array.from(map.values())
+}
+
+function queueOffline(bucket: OfflineBucket, item: Record<string, unknown>): any {
+  enqueuePending({ [bucket]: [item] } as any)
+  void runSync()
+  return item
+}
+
+async function offlineList<T extends { id: string }>(request: () => Promise<T[]>, bucket: OfflineBucket): Promise<T[]> {
+  try { return await request() } catch (error) {
+    if (!isOfflineError(error)) throw error
+    return cachedBucket<T>(bucket)
+  }
+}
+
+function offlineRecord(bucket: OfflineBucket, id: string | undefined, data: Record<string, unknown>): Record<string, unknown> {
+  const now = new Date().toISOString()
+  const existing = id ? cachedBucket<{ id: string } & Record<string, unknown>>(bucket).find((item) => item.id === id) : undefined
+  return { ...existing, ...data, id: id ?? localId(), createdAt: existing?.createdAt ?? data.createdAt ?? now, updatedAt: now }
+}
+
 // 分类
 export const api = {
   categories: {
-    list: () => req<Category[]>('/categories'),
-    create: (data: Partial<Category>) =>
-      req<Category>('/categories', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: Partial<Category>) =>
-      req<Category>(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id: string) => req(`/categories/${id}`, { method: 'DELETE' }),
+    list: () => offlineList(() => req<Category[]>('/categories'), 'categories'),
+    create: async (data: Partial<Category>) => {
+      try { return await req<Category>('/categories', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('categories', offlineRecord('categories', undefined, {
+          name: data.name ?? '', color: data.color ?? '#6d5efc', icon: data.icon ?? null, sortOrder: data.sortOrder ?? 0,
+        })) as Category
+      }
+    },
+    update: async (id: string, data: Partial<Category>) => {
+      try { return await req<Category>(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('categories', offlineRecord('categories', id, data as Record<string, unknown>)) as Category
+      }
+    },
+    remove: async (id: string) => {
+      try { return await req(`/categories/${id}`, { method: 'DELETE' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('categories', { id, deleted: true })
+      }
+    },
   },
   tags: {
-    list: () => req<Tag[]>('/tags'),
-    create: (data: Partial<Tag> & { name: string }) =>
-      req<Tag>('/tags', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: Partial<Tag>) =>
-      req<Tag>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id: string) => req(`/tags/${id}`, { method: 'DELETE' }),
+    list: () => offlineList(() => req<Tag[]>('/tags'), 'tags'),
+    create: async (data: Partial<Tag> & { name: string }) => {
+      try { return await req<Tag>('/tags', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('tags', offlineRecord('tags', undefined, {
+          name: data.name, color: data.color ?? '#6d5efc', icon: data.icon ?? null, categoryId: data.categoryId ?? null,
+          parentId: data.parentId ?? null, trackType: data.trackType ?? 'time', mode: data.mode ?? 'chaos', sortOrder: data.sortOrder ?? 0,
+        })) as Tag
+      }
+    },
+    update: async (id: string, data: Partial<Tag>) => {
+      try { return await req<Tag>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('tags', offlineRecord('tags', id, data as Record<string, unknown>)) as Tag
+      }
+    },
+    remove: async (id: string) => {
+      try { return await req(`/tags/${id}`, { method: 'DELETE' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('tags', { id, parentId: cachedBucket<Tag>('tags').find((tag) => tag.id === id)?.parentId ?? null, deleted: true })
+      }
+    },
   },
   timer: {
     current: () => req<{ running: TimeEntry[]; serverTime: string }>('/timer/current'),
@@ -266,15 +344,47 @@ export const api = {
       if (params?.categoryId) q.set('categoryId', params.categoryId)
       if (params?.tagId) q.set('tagId', params.tagId)
       if (params?.repeatType) q.set('repeatType', params.repeatType)
-      return req<Todo[]>(`/todos?${q}`)
+      return offlineList(async () => req<Todo[]>(`/todos?${q}`), 'todos').then((items) => items.filter((todo) =>
+        (!params?.status || todo.status === params.status) &&
+        (!params?.categoryId || todo.categoryId === params.categoryId) &&
+        (!params?.tagId || todo.tagId === params.tagId) &&
+        (!params?.repeatType || todo.repeatType === params.repeatType)
+      ))
     },
-    create: (data: Partial<Todo> & { title: string }) =>
-      req<Todo>('/todos', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: Partial<Todo>) =>
-      req<Todo>(`/todos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    toggle: (id: string, lateReason?: string, restoreReason?: string) =>
-      req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ lateReason, restoreReason }) }),
-    remove: (id: string) => req(`/todos/${id}`, { method: 'DELETE' }),
+    create: async (data: Partial<Todo> & { title: string }) => {
+      try { return await req<Todo>('/todos', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('todos', offlineRecord('todos', undefined, {
+          title: data.title, description: data.description ?? null, status: data.status ?? 'pending', priority: data.priority ?? 0,
+          dueDate: data.dueDate ?? null, categoryId: data.categoryId ?? null, tagId: data.tagId ?? null, goalId: data.goalId ?? null,
+          repeatType: data.repeatType ?? 'none', completedAt: data.completedAt ?? null, lateReason: data.lateReason ?? null, restoreReason: data.restoreReason ?? null,
+        })) as Todo
+      }
+    },
+    update: async (id: string, data: Partial<Todo>) => {
+      try { return await req<Todo>(`/todos/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('todos', offlineRecord('todos', id, data as Record<string, unknown>)) as Todo
+      }
+    },
+    toggle: async (id: string, lateReason?: string, restoreReason?: string) => {
+      try { return await req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ lateReason, restoreReason }) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const current = cachedBucket<Todo>('todos').find((todo) => todo.id === id)
+        if (!current) throw error
+        const done = current.status === 'done'
+        return queueOffline('todos', offlineRecord('todos', id, {
+          status: done ? 'pending' : 'done', completedAt: done ? null : new Date().toISOString(),
+          lateReason: lateReason ?? current.lateReason ?? null, restoreReason: restoreReason ?? current.restoreReason ?? null,
+        })) as Todo
+      }
+    },
+    remove: async (id: string) => {
+      try { return await req(`/todos/${id}`, { method: 'DELETE' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('todos', { id, deleted: true })
+      }
+    },
   },
   stats: {
     summary: (categoryId?: string) => {
@@ -306,12 +416,29 @@ export const api = {
     },
   },
   goals: {
-    list: () => req<Goal[]>('/goals'),
-    create: (data: { tagId: string; title: string; kind?: string; type?: string; target?: number; period?: string; periodDays?: number | null; deadlineTime?: string | null; deadlineDay?: number | null; deadlineAt?: string | null }) =>
-      req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: Partial<Goal>) =>
-      req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id: string) => req(`/goals/${id}`, { method: 'DELETE' }),
+    list: () => offlineList(() => req<Goal[]>('/goals'), 'goals'),
+    create: async (data: { tagId: string; title: string; kind?: string; type?: string; target?: number; period?: string; periodDays?: number | null; deadlineTime?: string | null; deadlineDay?: number | null; deadlineAt?: string | null }) => {
+      try { return await req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('goals', offlineRecord('goals', undefined, {
+          tagId: data.tagId, title: data.title, kind: data.kind ?? 'tracking', type: data.type ?? 'count', target: data.target ?? 1,
+          period: data.period ?? 'daily', periodDays: data.periodDays ?? null, deadlineTime: data.deadlineTime ?? null,
+          deadlineDay: data.deadlineDay ?? null, deadlineAt: data.deadlineAt ?? null, active: true,
+        })) as Goal
+      }
+    },
+    update: async (id: string, data: Partial<Goal>) => {
+      try { return await req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('goals', offlineRecord('goals', id, data as Record<string, unknown>)) as Goal
+      }
+    },
+    remove: async (id: string) => {
+      try { return await req(`/goals/${id}`, { method: 'DELETE' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('goals', { id, deleted: true })
+      }
+    },
   },
   memos: {
     list: (params?: { timeEntryId?: string; tagId?: string; days?: number; from?: string; to?: string; standaloneOnly?: boolean | string; type?: string }) => {
@@ -323,21 +450,44 @@ export const api = {
       if (params?.to) q.set('to', params.to)
       if (params?.standaloneOnly) q.set('standaloneOnly', String(params.standaloneOnly))
       if (params?.type) q.set('type', params.type)
-      return req<Memo[]>(`/memos?${q}`)
+      return offlineList(async () => req<Memo[]>(`/memos?${q}`), 'memos').then((items) => items.filter((memo) => {
+        if (params?.timeEntryId && memo.timeEntryId !== params.timeEntryId) return false
+        if (params?.tagId && memo.tagId !== params.tagId) return false
+        if (params?.type && memo.type !== params.type) return false
+        if (params?.standaloneOnly && memo.timeEntryId) return false
+        const created = new Date(memo.createdAt).getTime()
+        if (params?.from && created < new Date(params.from).getTime()) return false
+        if (params?.to && created > new Date(params.to).getTime()) return false
+        if (params?.days && created < Date.now() - params.days * 24 * 60 * 60 * 1000) return false
+        return true
+      }))
     },
-    create: (data: {
+    create: async (data: {
       content: string
       type?: 'point' | 'diary'
       timeEntryId?: string
       tagId?: string
       createdAt?: string
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
-    }) => req<Memo>('/memos', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: {
+    }) => {
+      try { return await req<Memo>('/memos', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('memos', offlineRecord('memos', undefined, {
+          content: data.content, type: data.type ?? 'diary', timeEntryId: data.timeEntryId ?? null, tagId: data.tagId ?? null,
+          ...(data.createdAt ? { createdAt: data.createdAt } : {}), attachments: data.attachments ?? [],
+        })) as Memo
+      }
+    },
+    update: async (id: string, data: {
       content?: string
       createdAt?: string
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
-    }) => req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    }) => {
+      try { return await req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('memos', offlineRecord('memos', id, data as Record<string, unknown>)) as Memo
+      }
+    },
     upload: async (file: File) => {
       const host = getServerHost()
       const form = new FormData()
@@ -368,7 +518,12 @@ export const api = {
       }
       return res.json() as Promise<{ filename: string; path: string; mimeType: string; size: number }>
     },
-    remove: (id: string) => req(`/memos/${id}`, { method: 'DELETE' }),
+    remove: async (id: string) => {
+      try { return await req(`/memos/${id}`, { method: 'DELETE' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('memos', { id, deleted: true })
+      }
+    },
   },
   calendars: {
     subscriptions: {

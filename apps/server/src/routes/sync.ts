@@ -24,6 +24,38 @@ function clean(bucket: Bucket, record: WireRecord): Record<string, unknown> {
   return Object.fromEntries(writable[bucket].filter((key) => key in record).map((key) => [key, record[key]]))
 }
 
+function dependencies(bucket: Bucket, record: WireRecord): string[] {
+  if (bucket === 'tags') return typeof record.parentId === 'string' ? [record.parentId] : []
+  if (bucket === 'todos') return typeof record.goalId === 'string' ? [record.goalId] : []
+  if (bucket === 'timeEntries') return [record.todoId, record.resumedFromId, record.interruptedFromId].filter((id): id is string => typeof id === 'string')
+  if (bucket === 'memos') return typeof record.timeEntryId === 'string' ? [record.timeEntryId] : []
+  return []
+}
+
+function orderedRecords(bucket: Bucket, records: WireRecord[]): WireRecord[] {
+  const remaining = records.filter((record) => record && typeof record.id === 'string' && !record.deleted)
+  const ids = new Set(remaining.map((record) => record.id))
+  const ordered: WireRecord[] = []
+  while (remaining.length) {
+    const index = remaining.findIndex((record) => dependencies(bucket, record).every((id) => !ids.has(id) || ordered.some((item) => item.id === id)))
+    const [next] = remaining.splice(index < 0 ? 0 : index, 1)
+    ids.delete(next.id)
+    ordered.push(next)
+  }
+  return ordered
+}
+
+function orderedDeletions(bucket: Bucket, records: WireRecord[]): WireRecord[] {
+  const remaining = records.filter((record) => record && typeof record.id === 'string')
+  const ordered: WireRecord[] = []
+  while (remaining.length) {
+    const index = remaining.findIndex((record) => !remaining.some((other) => other !== record && dependencies(bucket, other).includes(record.id)))
+    const [next] = remaining.splice(index < 0 ? remaining.length - 1 : index, 1)
+    ordered.push(next)
+  }
+  return ordered
+}
+
 async function snapshot() {
   const [categories, tags, timeEntries, todos, goals, memos] = await Promise.all([
     prisma.category.findMany({ orderBy: { createdAt: 'asc' } }), prisma.tag.findMany({ orderBy: { createdAt: 'asc' } }),
@@ -41,14 +73,13 @@ export default async function syncRoutes(app: FastifyInstance) {
     if (typeof body.cursor !== 'number' || !Number.isFinite(body.cursor) || body.cursor < 0) return reply.code(400).send({ error: 'cursor 必须是有效的数字' })
     for (const bucket of buckets) if (body[bucket] !== undefined && !Array.isArray(body[bucket])) return reply.code(400).send({ error: `${bucket} 必须是数组` })
 
-    for (const bucket of buckets) for (const record of body[bucket] ?? []) {
-      if (!record || typeof record.id !== 'string' || !record.id || record.deleted) continue
+    for (const bucket of buckets) for (const record of orderedRecords(bucket, body[bucket] ?? [])) {
       const data = clean(bucket, record)
       await modelFor(bucket).upsert({ where: { id: record.id }, create: data, update: data })
     }
     for (const bucket of [...buckets].reverse()) {
-      const ids = (body[bucket] ?? []).filter((record) => record?.deleted && typeof record.id === 'string').map((record) => record.id)
-      if (ids.length) await modelFor(bucket).deleteMany({ where: { id: { in: ids } } })
+      const records = (body[bucket] ?? []).filter((record) => record?.deleted && typeof record.id === 'string')
+      for (const record of orderedDeletions(bucket, records)) await modelFor(bucket).deleteMany({ where: { id: record.id } })
     }
     return { ...(await snapshot()), updatedAt: new Date().toISOString() }
   })

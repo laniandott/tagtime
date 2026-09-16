@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeServerHost, reqWithRetry, resolveUploadUrl } from '../src/api'
+import { api, normalizeServerHost, reqWithRetry, resolveUploadUrl } from '../src/api'
 
 const originalFetch = globalThis.fetch
 
@@ -10,6 +10,7 @@ function setFetch(handler: (input: RequestInfo | URL, init?: RequestInit) => Pro
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
+  ;(globalThis as any).localStorage?.clear?.()
 })
 
 test('GET 请求遇到网络错误会重试，最多三次', async () => {
@@ -83,4 +84,20 @@ test('服务器地址只接受安全的 HTTP(S) 地址', () => {
   assert.equal(normalizeServerHost('file:///tmp/tagtime'), '')
   assert.equal(normalizeServerHost('https://user:pass@example.com'), '')
   assert.equal(normalizeServerHost('https://example.com/?token=secret'), '')
+})
+
+test('断网时分类先进入本地队列，列表可立即读回', async () => {
+  const values = new Map<string, string>()
+  ;(globalThis as any).localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+  }
+  setFetch(async () => { throw new TypeError('fetch failed') })
+
+  const created = await api.categories.create({ name: '断网分类' })
+  const listed = await api.categories.list()
+  assert.equal(created.name, '断网分类')
+  assert.equal(listed.some((item) => item.id === created.id && item.name === '断网分类'), true)
 })
