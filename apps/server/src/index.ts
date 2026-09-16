@@ -16,6 +16,7 @@ import goalRoutes from './routes/goals.js'
 import memoRoutes, { UPLOAD_DIR } from './routes/memos.js'
 import calendarRoutes from './routes/calendar.js'
 import calendarsRoutes from './routes/calendars.js'
+import syncRoutes from './routes/sync.js'
 import { BODY_SIZE_LIMIT } from './config.js'
 import { isSafeUploadPath } from './upload-path.js'
 
@@ -75,6 +76,7 @@ await app.register(goalRoutes, { prefix: '/api/goals' })
 await app.register(memoRoutes, { prefix: '/api/memos' })
 await app.register(calendarRoutes, { prefix: '/api/calendar' })
 await app.register(calendarsRoutes, { prefix: '/api/calendars' })
+await app.register(syncRoutes, { prefix: '/api/sync' })
 
 // Serve built frontend (production)
 const webDist = join(__dirname, '..', '..', 'web', 'dist')

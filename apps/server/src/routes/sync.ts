@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import prisma from '../db.js'
 
-type Bucket = 'categories' | 'tags' | 'timeEntries' | 'todos' | 'goals' | 'memos'
+type Bucket = 'categories' | 'tags' | 'goals' | 'todos' | 'timeEntries' | 'memos'
 type WireRecord = Record<string, unknown> & { id: string; deleted?: boolean }
 type SyncBody = { cursor?: number } & Partial<Record<Bucket, WireRecord[]>>
-const buckets: Bucket[] = ['categories', 'tags', 'timeEntries', 'todos', 'goals', 'memos']
+// Parent records must exist before their children; deletion runs in reverse.
+const buckets: Bucket[] = ['categories', 'tags', 'goals', 'todos', 'timeEntries', 'memos']
 const writable: Record<Bucket, string[]> = {
   categories: ['id', 'name', 'color', 'icon', 'sortOrder', 'createdAt', 'updatedAt'],
   tags: ['id', 'name', 'color', 'icon', 'categoryId', 'parentId', 'trackType', 'mode', 'sortOrder', 'createdAt', 'updatedAt'],

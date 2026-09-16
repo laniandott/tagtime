@@ -31,6 +31,7 @@ before(async () => {
   const goalRoutes = (await import('../src/routes/goals.js')).default
   const calendarRoutes = (await import('../src/routes/calendar.js')).default
   const calendarsRoutes = (await import('../src/routes/calendars.js')).default
+  const syncRoutes = (await import('../src/routes/sync.js')).default
   uploadDir = (await import('../src/config.js')).UPLOAD_DIR
 
   app = Fastify({ logger: false })
@@ -44,6 +45,7 @@ before(async () => {
   await app.register(goalRoutes, { prefix: '/api/goals' })
   await app.register(calendarRoutes, { prefix: '/api/calendar' })
   await app.register(calendarsRoutes, { prefix: '/api/calendars' })
+  await app.register(syncRoutes, { prefix: '/api/sync' })
   await app.ready()
 })
 
@@ -916,4 +918,60 @@ test('标签层级：只能把一级标签设为上级，二级标签不能直�
     payload: { title: '不能挂一级标签', categoryId: category.id, tagId: parent.id },
   })
   assert.equal(invalidActivity.statusCode, 400)
+})
+
+test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向删除', async () => {
+  const stamp = Date.now().toString()
+  const ids = {
+    category: `sync-category-${stamp}`,
+    tag: `sync-tag-${stamp}`,
+    goal: `sync-goal-${stamp}`,
+    todo: `sync-todo-${stamp}`,
+    entry: `sync-entry-${stamp}`,
+    memo: `sync-memo-${stamp}`,
+  }
+  const now = new Date().toISOString()
+  const payload = {
+    cursor: 0,
+    categories: [{ id: ids.category, name: `同步分类-${stamp}` }],
+    tags: [{ id: ids.tag, name: `同步标签-${stamp}`, categoryId: ids.category }],
+    goals: [{ id: ids.goal, tagId: ids.tag, title: '同步目标', kind: 'tracking', type: 'count', target: 1, period: 'daily' }],
+    todos: [{ id: ids.todo, title: '同步待办', status: 'pending', tagId: ids.tag, goalId: ids.goal }],
+    timeEntries: [{ id: ids.entry, startTime: now, endTime: now, tagId: ids.tag, todoId: ids.todo }],
+    memos: [{ id: ids.memo, content: '同步备忘', tagId: ids.tag, timeEntryId: ids.entry }],
+  }
+
+  const first = await app.inject({ method: 'POST', url: '/api/sync', payload })
+  assert.equal(first.statusCode, 200)
+  assert.equal(await prisma.category.count({ where: { id: ids.category } }), 1)
+  assert.equal(await prisma.tag.count({ where: { id: ids.tag } }), 1)
+  assert.equal(await prisma.goal.count({ where: { id: ids.goal } }), 1)
+  assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 1)
+  assert.equal(await prisma.timeEntry.count({ where: { id: ids.entry } }), 1)
+  assert.equal(await prisma.memo.count({ where: { id: ids.memo } }), 1)
+
+  const repeat = await app.inject({ method: 'POST', url: '/api/sync', payload })
+  assert.equal(repeat.statusCode, 200)
+  assert.equal(await prisma.memo.count({ where: { tagId: ids.tag } }), 1)
+
+  const deleted = await app.inject({
+    method: 'POST',
+    url: '/api/sync',
+    payload: {
+      cursor: repeat.json().cursor,
+      categories: [{ id: ids.category, deleted: true }],
+      tags: [{ id: ids.tag, deleted: true }],
+      goals: [{ id: ids.goal, deleted: true }],
+      todos: [{ id: ids.todo, deleted: true }],
+      timeEntries: [{ id: ids.entry, deleted: true }],
+      memos: [{ id: ids.memo, deleted: true }],
+    },
+  })
+  assert.equal(deleted.statusCode, 200)
+  assert.equal(await prisma.category.count({ where: { id: ids.category } }), 0)
+  assert.equal(await prisma.tag.count({ where: { id: ids.tag } }), 0)
+  assert.equal(await prisma.goal.count({ where: { id: ids.goal } }), 0)
+  assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 0)
+  assert.equal(await prisma.timeEntry.count({ where: { id: ids.entry } }), 0)
+  assert.equal(await prisma.memo.count({ where: { id: ids.memo } }), 0)
 })
