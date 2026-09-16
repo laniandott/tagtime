@@ -56,7 +56,6 @@ export async function exchangeSync(body: {
   todos: any[]
   goals: any[]
   memos: any[]
-  attachments: any[]
 }): Promise<any | null> {
   try {
     const host = getServerHost()
@@ -130,11 +129,10 @@ export function enqueuePending(change: {
   todos?: any[]
   goals?: any[]
   memos?: any[]
-  attachments?: any[]
 }): void {
   const queue = loadPendingQueue()
   const next = { ...queue }
-  for (const key of ['categories', 'tags', 'timeEntries', 'todos', 'goals', 'memos', 'attachments'] as const) {
+  for (const key of ['categories', 'tags', 'timeEntries', 'todos', 'goals', 'memos'] as const) {
     const list = change[key]
     if (!Array.isArray(list) || !list.length) continue
     const current = Array.isArray(next[key]) ? next[key] : []
@@ -157,10 +155,9 @@ export function loadPendingQueue(): {
   todos: any[]
   goals: any[]
   memos: any[]
-  attachments: any[]
 } {
   if (typeof localStorage === 'undefined') {
-    return { categories: [], tags: [], timeEntries: [], todos: [], goals: [], memos: [], attachments: [] }
+    return { categories: [], tags: [], timeEntries: [], todos: [], goals: [], memos: [] }
   }
   try {
     const raw = localStorage.getItem(PENDING_QUEUE_KEY)
@@ -168,7 +165,7 @@ export function loadPendingQueue(): {
   } catch {
     // ignore
   }
-  return { categories: [], tags: [], timeEntries: [], todos: [], goals: [], memos: [], attachments: [] }
+  return { categories: [], tags: [], timeEntries: [], todos: [], goals: [], memos: [] }
 }
 
 export function clearPendingQueue(): void {
