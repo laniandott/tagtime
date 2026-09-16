@@ -1,4 +1,4 @@
-import { getServerHost, req } from './api'
+import { getServerHost } from './api'
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'error'
 
@@ -12,6 +12,7 @@ export type SyncState = {
 
 const STORAGE_KEY = 'tagtime.sync'
 const PENDING_QUEUE_KEY = 'tagtime.sync.pending'
+let syncPromise: Promise<boolean> | null = null
 
 export function loadSyncState(): SyncState {
   if (typeof localStorage === 'undefined') {
@@ -74,6 +75,12 @@ export async function exchangeSync(body: {
 }
 
 export async function runSync(): Promise<boolean> {
+  if (syncPromise) return syncPromise
+  syncPromise = runSyncInternal()
+  try { return await syncPromise } finally { syncPromise = null }
+}
+
+async function runSyncInternal(): Promise<boolean> {
   const state = loadSyncState()
   if (state.status === 'syncing') return false
   saveSyncState({ ...state, status: 'syncing', error: undefined })
@@ -138,7 +145,8 @@ export function enqueuePending(change: {
     }
     next[key] = Array.from(map.values())
   }
-  localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(next))
+  if (typeof localStorage === 'undefined') return
+  try { localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(next)) } catch { return }
   updatePendingCount()
 }
 
@@ -185,4 +193,5 @@ export function initSyncAuto(): void {
   window.addEventListener('online', () => {
     void runSync()
   })
+  window.setInterval(() => { if (navigator.onLine) void runSync() }, 10_000)
 }
