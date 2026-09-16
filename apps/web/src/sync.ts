@@ -1,4 +1,5 @@
 import { getServerHost } from './api'
+import { saveLocalRecord, saveLocalSnapshot } from './localStore'
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'error'
 
@@ -120,6 +121,7 @@ async function runSyncInternal(): Promise<boolean> {
     if (Object.values(remaining).some((items) => items.length)) localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(remaining))
     else clearPendingQueue()
     try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(result)) } catch { /* best effort */ }
+    saveLocalSnapshot(result)
     saveSyncState({
       status: 'synced',
       cursor: nextCursor,
@@ -156,6 +158,7 @@ export function enqueuePending(change: {
     for (const item of list) {
       if (!item || typeof item !== 'object' || typeof item.id !== 'string') continue
       map.set(item.id, item)
+      saveLocalRecord(key, item)
     }
     next[key] = Array.from(map.values())
   }

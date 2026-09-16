@@ -101,3 +101,17 @@ test('断网时分类先进入本地队列，列表可立即读回', async () =>
   assert.equal(created.name, '断网分类')
   assert.equal(listed.some((item) => item.id === created.id && item.name === '断网分类'), true)
 })
+
+test('在线读取后重载仍优先显示本地数据', async () => {
+  const values = new Map<string, string>()
+  ;(globalThis as any).localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+  }
+  setFetch(async () => new Response(JSON.stringify([{ id: 'persisted-category', name: '本地可见', color: '#123456', icon: null, sortOrder: 0 }]), { status: 200 }))
+  assert.equal((await api.categories.list())[0].name, '本地可见')
+  setFetch(async () => { throw new TypeError('offline') })
+  assert.equal((await api.categories.list())[0].id, 'persisted-category')
+})

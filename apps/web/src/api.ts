@@ -21,6 +21,7 @@ import type {
   LinkedNoteEntry,
 } from './types'
 import { enqueuePending, loadCachedSnapshot, loadPendingQueue, runSync } from './sync'
+import { loadLocalBucket, saveLocalBucket, saveLocalRecord } from './localStore'
 
 export function getServerHost(): string {
   if (typeof localStorage !== 'undefined') {
@@ -231,6 +232,7 @@ function cachedBucket<T extends { id: string }>(bucket: OfflineBucket): T[] {
   if (Array.isArray(snapshot)) for (const item of snapshot) {
     if (item && typeof item.id === 'string') map.set(item.id, item as T)
   }
+  for (const item of loadLocalBucket<T>(bucket)) map.set(item.id, item)
   const pending = loadPendingQueue()[bucket]
   if (Array.isArray(pending)) for (const item of pending) {
     if (!item || typeof item.id !== 'string') continue
@@ -241,16 +243,141 @@ function cachedBucket<T extends { id: string }>(bucket: OfflineBucket): T[] {
 }
 
 function queueOffline(bucket: OfflineBucket, item: Record<string, unknown>): any {
+  saveLocalRecord(bucket, item as { id: string; deleted?: boolean })
   enqueuePending({ [bucket]: [item] } as any)
   void runSync()
   return item
 }
 
-async function offlineList<T extends { id: string }>(request: () => Promise<T[]>, bucket: OfflineBucket): Promise<T[]> {
-  try { return await request() } catch (error) {
-    if (!isOfflineError(error)) throw error
-    return cachedBucket<T>(bucket)
+async function offlineList<T extends { id: string }>(request: () => Promise<T[]>, bucket: OfflineBucket, replace = true): Promise<T[]> {
+  const local = cachedBucket<T>(bucket)
+  if (local.length) {
+    void request().then((items) => {
+      if (replace) saveLocalBucket(bucket, items)
+      else for (const item of items) saveLocalRecord(bucket, item)
+    }).catch(() => {})
+    return local
   }
+  try {
+    const items = await request()
+    if (replace) saveLocalBucket(bucket, items)
+    else for (const item of items) saveLocalRecord(bucket, item)
+    return items
+  } catch (error) {
+    if (!isOfflineError(error)) throw error
+    return local
+  }
+}
+
+function remember<T extends { id: string }>(bucket: OfflineBucket, item: T): T {
+  saveLocalRecord(bucket, item)
+  return item
+}
+
+function forget(bucket: OfflineBucket, id: string): void {
+  saveLocalRecord(bucket, { id, deleted: true })
+}
+
+function localTimeEntries(params?: { from?: string; to?: string; tagId?: string }): TimeEntry[] {
+  return cachedBucket<TimeEntry>('timeEntries').filter((entry) => {
+    const start = new Date(entry.startTime).getTime()
+    if (params?.from && start < new Date(params.from).getTime()) return false
+    if (params?.to && start > new Date(params.to).getTime()) return false
+    if (params?.tagId && entry.tagId !== params.tagId) return false
+    return true
+  })
+}
+
+function localPendingEntries(): TimeEntry[] {
+  return cachedBucket<TimeEntry>('timeEntries').filter((entry) => entry.pendingResume && !entry.dismissed)
+}
+
+function localDuration(entry: TimeEntry, from?: number, to?: number): number {
+  if (entry.dismissed) return 0
+  const start = new Date(entry.startTime).getTime()
+  const end = entry.endTime ? new Date(entry.endTime).getTime() : Date.now()
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0
+  const clippedStart = Math.max(start, from ?? start)
+  const clippedEnd = Math.min(end, to ?? end)
+  return Math.max(0, clippedEnd - clippedStart)
+}
+
+function localStatsFilter(entry: TimeEntry, categoryId?: string): boolean {
+  if (!categoryId) return true
+  return cachedBucket<Tag>('tags').find((tag) => tag.id === entry.tagId)?.categoryId === categoryId
+}
+
+function localSummary(categoryId?: string): Summary {
+  const now = new Date()
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekStart = dayStart - ((now.getDay() + 6) % 7) * 86400000
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+  const tags = cachedBucket<Tag>('tags')
+  const categories = cachedBucket<Category>('categories')
+  const entries = cachedBucket<TimeEntry>('timeEntries').filter((entry) => localStatsFilter(entry, categoryId))
+  const todayByCategory = new Map<string, number>()
+  for (const entry of entries) {
+    const category = categories.find((item) => item.id === tags.find((tag) => tag.id === entry.tagId)?.categoryId)
+    if (!category) continue
+    todayByCategory.set(category.id, (todayByCategory.get(category.id) ?? 0) + localDuration(entry, dayStart, now.getTime()))
+  }
+  return {
+    today: entries.reduce((sum, entry) => sum + localDuration(entry, dayStart), 0),
+    week: entries.reduce((sum, entry) => sum + localDuration(entry, weekStart), 0),
+    month: entries.reduce((sum, entry) => sum + localDuration(entry, monthStart), 0),
+    todayByCategory: Array.from(todayByCategory, ([id, ms]) => {
+      const category = categories.find((item) => item.id === id)
+      return { name: category?.name ?? '未分类', color: category?.color ?? '#6d5efc', ms }
+    }),
+  }
+}
+
+function localDaily(params: { days?: number; from?: string; to?: string; categoryId?: string }): DailyStat[] {
+  const now = new Date()
+  const start = params.from ? new Date(params.from) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((params.days ?? 7) - 1))
+  const end = params.to ? new Date(params.to) : now
+  const result: DailyStat[] = []
+  for (const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate()); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    const dayStart = cursor.getTime()
+    const dayEnd = dayStart + 86400000
+    const total = cachedBucket<TimeEntry>('timeEntries').filter((entry) => localStatsFilter(entry, params.categoryId)).reduce((sum, entry) => sum + localDuration(entry, dayStart, dayEnd), 0)
+    result.push({ date: cursor.toISOString().slice(0, 10), total, byCategory: [] })
+  }
+  return result
+}
+
+function localByTag(from?: string, to?: string, categoryId?: string): TagStat[] {
+  const start = from ? new Date(from).getTime() : undefined
+  const end = to ? new Date(to).getTime() : undefined
+  const tags = cachedBucket<Tag>('tags')
+  const categories = cachedBucket<Category>('categories')
+  const totals = new Map<string, number>()
+  for (const entry of cachedBucket<TimeEntry>('timeEntries')) {
+    if (!localStatsFilter(entry, categoryId)) continue
+    totals.set(entry.tagId, (totals.get(entry.tagId) ?? 0) + localDuration(entry, start, end))
+  }
+  return Array.from(totals, ([tagId, ms]) => {
+    const tag = tags.find((item) => item.id === tagId)
+    const category = categories.find((item) => item.id === tag?.categoryId)
+    return { tagId, tagName: tag?.name ?? '未分类', color: tag?.color ?? '#6d5efc', category: category?.name ?? null, ms }
+  }).sort((a, b) => b.ms - a.ms)
+}
+
+function localFragmentation(from?: string, to?: string): { tags: FragmentationStat[] } {
+  const start = from ? new Date(from).getTime() : undefined
+  const end = to ? new Date(to).getTime() : undefined
+  const groups = new Map<string, TimeEntry[]>()
+  for (const entry of cachedBucket<TimeEntry>('timeEntries')) {
+    if (localDuration(entry, start, end) > 0) groups.set(entry.tagId, [...(groups.get(entry.tagId) ?? []), entry])
+  }
+  const tags = cachedBucket<Tag>('tags')
+  return { tags: Array.from(groups, ([tagId, entries]) => {
+    const starts = entries.map((entry) => new Date(entry.startTime).getTime()).filter(Number.isFinite)
+    const ends = entries.map((entry) => new Date(entry.endTime ?? new Date()).getTime()).filter(Number.isFinite)
+    const focusedMs = entries.reduce((sum, entry) => sum + localDuration(entry, start, end), 0)
+    const spanMs = Math.max(0, Math.min(Math.max(...ends, 0), end ?? Math.max(...ends, 0)) - Math.max(Math.min(...starts), start ?? Math.min(...starts)))
+    return { tagId, tagName: tags.find((tag) => tag.id === tagId)?.name ?? '未分类', focusedMs, spanMs, ratio: spanMs ? focusedMs / spanMs : 0, interruptCount: Math.max(0, entries.length - 1) }
+  }) }
 }
 
 function offlineRecord(bucket: OfflineBucket, id: string | undefined, data: Record<string, unknown>): Record<string, unknown> {
@@ -264,7 +391,7 @@ export const api = {
   categories: {
     list: () => offlineList(() => req<Category[]>('/categories'), 'categories'),
     create: async (data: Partial<Category>) => {
-      try { return await req<Category>('/categories', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('categories', await req<Category>('/categories', { method: 'POST', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('categories', offlineRecord('categories', undefined, {
           name: data.name ?? '', color: data.color ?? '#6d5efc', icon: data.icon ?? null, sortOrder: data.sortOrder ?? 0,
@@ -272,13 +399,13 @@ export const api = {
       }
     },
     update: async (id: string, data: Partial<Category>) => {
-      try { return await req<Category>(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('categories', await req<Category>(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('categories', offlineRecord('categories', id, data as Record<string, unknown>)) as Category
       }
     },
     remove: async (id: string) => {
-      try { return await req(`/categories/${id}`, { method: 'DELETE' }) } catch (error) {
+      try { await req(`/categories/${id}`, { method: 'DELETE' }); forget('categories', id); return null } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('categories', { id, deleted: true })
       }
@@ -287,7 +414,7 @@ export const api = {
   tags: {
     list: () => offlineList(() => req<Tag[]>('/tags'), 'tags'),
     create: async (data: Partial<Tag> & { name: string }) => {
-      try { return await req<Tag>('/tags', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('tags', await req<Tag>('/tags', { method: 'POST', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('tags', offlineRecord('tags', undefined, {
           name: data.name, color: data.color ?? '#6d5efc', icon: data.icon ?? null, categoryId: data.categoryId ?? null,
@@ -296,46 +423,149 @@ export const api = {
       }
     },
     update: async (id: string, data: Partial<Tag>) => {
-      try { return await req<Tag>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('tags', await req<Tag>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('tags', offlineRecord('tags', id, data as Record<string, unknown>)) as Tag
       }
     },
     remove: async (id: string) => {
-      try { return await req(`/tags/${id}`, { method: 'DELETE' }) } catch (error) {
+      try { await req(`/tags/${id}`, { method: 'DELETE' }); forget('tags', id); return null } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('tags', { id, parentId: cachedBucket<Tag>('tags').find((tag) => tag.id === id)?.parentId ?? null, deleted: true })
       }
     },
   },
   timer: {
-    current: () => req<{ running: TimeEntry[]; serverTime: string }>('/timer/current'),
-    start: (data: { tagId: string; note?: string; todoId?: string; resumedFromId?: string; interruptedFromId?: string }) =>
-      req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify(data) }),
-    stop: (id: string, note?: string, pendingResume?: boolean) =>
-      req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note, pendingResume }) }),
-    stopAll: () => req<{ count: number }>('/timer/stop', { method: 'POST' }),
-    quick: (data: { tagId: string; note?: string; todoId?: string }) =>
-      req<TimeEntry & { serverTime: string }>('/timer/quick', { method: 'POST', body: JSON.stringify(data) }),
+    current: async () => {
+      const local = cachedBucket<TimeEntry>('timeEntries')
+      if (local.length) {
+        void req<{ running: TimeEntry[]; serverTime: string }>('/timer/current').then((data) => {
+          for (const entry of data.running) saveLocalRecord('timeEntries', entry)
+        }).catch(() => {})
+        return { running: local.filter((entry) => !entry.endTime && !entry.dismissed), serverTime: new Date().toISOString() }
+      }
+      try {
+        const data = await req<{ running: TimeEntry[]; serverTime: string }>('/timer/current')
+        for (const entry of data.running) saveLocalRecord('timeEntries', entry)
+        return data
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return { running: local.filter((entry) => !entry.endTime && !entry.dismissed), serverTime: new Date().toISOString() }
+      }
+    },
+    start: async (data: { tagId: string; note?: string; todoId?: string; resumedFromId?: string; interruptedFromId?: string }) => {
+      try {
+        const result = await req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify(data) })
+        remember('timeEntries', result)
+        return result
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const local = queueOffline('timeEntries', offlineRecord('timeEntries', undefined, {
+          startTime: new Date().toISOString(), endTime: null, note: data.note ?? null, tagId: data.tagId, todoId: data.todoId ?? null,
+          pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: data.resumedFromId ?? null, interruptedFromId: data.interruptedFromId ?? null,
+        })) as TimeEntry
+        return { ...local, serverTime: new Date().toISOString() }
+      }
+    },
+    stop: async (id: string, note?: string, pendingResume?: boolean) => {
+      try {
+        const result = await req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note, pendingResume }) })
+        return remember('timeEntries', result)
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const current = cachedBucket<TimeEntry>('timeEntries').find((entry) => entry.id === id)
+        if (!current) throw error
+        return queueOffline('timeEntries', { ...current, endTime: new Date().toISOString(), note: note ?? current.note, pendingResume: pendingResume === true }) as TimeEntry
+      }
+    },
+    stopAll: async () => {
+      try { return await req<{ count: number }>('/timer/stop', { method: 'POST' }) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const running = cachedBucket<TimeEntry>('timeEntries').filter((entry) => !entry.endTime && !entry.dismissed)
+        for (const entry of running) queueOffline('timeEntries', { ...entry, endTime: new Date().toISOString() })
+        return { count: running.length }
+      }
+    },
+    quick: async (data: { tagId: string; note?: string; todoId?: string }) => {
+      try {
+        const result = await req<TimeEntry & { serverTime: string }>('/timer/quick', { method: 'POST', body: JSON.stringify(data) })
+        remember('timeEntries', result)
+        return result
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const now = new Date().toISOString()
+        const local = queueOffline('timeEntries', offlineRecord('timeEntries', undefined, {
+          startTime: now, endTime: now, note: data.note ?? null, tagId: data.tagId, todoId: data.todoId ?? null,
+          pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: null, interruptedFromId: null,
+        })) as TimeEntry
+        return { ...local, serverTime: now }
+      }
+    },
     list: (params?: { from?: string; to?: string; tagId?: string }) => {
       const q = new URLSearchParams()
       if (params?.from) q.set('from', params.from)
       if (params?.to) q.set('to', params.to)
       if (params?.tagId) q.set('tagId', params.tagId)
-      return req<TimeEntry[]>(`/timer?${q}`)
+      return offlineList(async () => req<TimeEntry[]>(`/timer?${q}`), 'timeEntries', false).then((items) => items.filter((entry) => {
+        const start = new Date(entry.startTime).getTime()
+        return (!params?.from || start >= new Date(params.from).getTime()) &&
+          (!params?.to || start <= new Date(params.to).getTime()) &&
+          (!params?.tagId || entry.tagId === params.tagId)
+      }))
     },
-    pending: () => req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending'),
-    dismissPending: (id: string, reason: string) =>
-      req<TimeEntry>(`/timer/${id}/dismiss-pending`, { method: 'POST', body: JSON.stringify({ reason }) }),
-    finishPending: (id: string) =>
-      req<TimeEntry>(`/timer/${id}/finish-pending`, { method: 'POST' }),
+    pending: async () => {
+      const local = localPendingEntries()
+      if (local.length) {
+        void req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending').then((data) => {
+          for (const entry of data.pending) saveLocalRecord('timeEntries', entry)
+        }).catch(() => {})
+        return { serverTime: new Date().toISOString(), pending: local }
+      }
+      try {
+        const data = await req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending')
+        for (const entry of data.pending) saveLocalRecord('timeEntries', entry)
+        return data
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return { serverTime: new Date().toISOString(), pending: localPendingEntries() }
+      }
+    },
+    dismissPending: async (id: string, reason: string) => {
+      const result = await req<TimeEntry>(`/timer/${id}/dismiss-pending`, { method: 'POST', body: JSON.stringify({ reason }) })
+      return remember('timeEntries', result)
+    },
+    finishPending: async (id: string) => {
+      const result = await req<TimeEntry>(`/timer/${id}/finish-pending`, { method: 'POST' })
+      return remember('timeEntries', result)
+    },
     terminateChain: (id: string, reason: string) =>
       req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) }),
-    remove: (id: string) => req(`/timer/${id}`, { method: 'DELETE' }),
-    manual: (data: { tagId: string; startTime: string; endTime: string; note?: string; todoId?: string }) =>
-      req<TimeEntry>('/timer/manual', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { startTime?: string; endTime?: string | null; note?: string; tagId?: string; todoId?: string | null }) =>
-      req<TimeEntry>(`/timer/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: async (id: string) => {
+      try { await req(`/timer/${id}`, { method: 'DELETE' }); forget('timeEntries', id); return null } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('timeEntries', { id, deleted: true })
+      }
+    },
+    manual: async (data: { tagId: string; startTime: string; endTime: string; note?: string; todoId?: string }) => {
+      try {
+        const result = await req<TimeEntry>('/timer/manual', { method: 'POST', body: JSON.stringify(data) })
+        return remember('timeEntries', result)
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('timeEntries', offlineRecord('timeEntries', undefined, {
+          ...data, note: data.note ?? null, pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: null, interruptedFromId: null,
+        })) as TimeEntry
+      }
+    },
+    update: async (id: string, data: { startTime?: string; endTime?: string | null; note?: string; tagId?: string; todoId?: string | null }) => {
+      try {
+        const result = await req<TimeEntry>(`/timer/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+        return remember('timeEntries', result)
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return queueOffline('timeEntries', offlineRecord('timeEntries', id, data as Record<string, unknown>)) as TimeEntry
+      }
+    },
   },
   todos: {
     list: (params?: { status?: string; categoryId?: string; tagId?: string; repeatType?: string }) => {
@@ -344,7 +574,7 @@ export const api = {
       if (params?.categoryId) q.set('categoryId', params.categoryId)
       if (params?.tagId) q.set('tagId', params.tagId)
       if (params?.repeatType) q.set('repeatType', params.repeatType)
-      return offlineList(async () => req<Todo[]>(`/todos?${q}`), 'todos').then((items) => items.filter((todo) =>
+      return offlineList(async () => req<Todo[]>(`/todos?${q}`), 'todos', false).then((items) => items.filter((todo) =>
         (!params?.status || todo.status === params.status) &&
         (!params?.categoryId || todo.categoryId === params.categoryId) &&
         (!params?.tagId || todo.tagId === params.tagId) &&
@@ -352,7 +582,7 @@ export const api = {
       ))
     },
     create: async (data: Partial<Todo> & { title: string }) => {
-      try { return await req<Todo>('/todos', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('todos', await req<Todo>('/todos', { method: 'POST', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('todos', offlineRecord('todos', undefined, {
           title: data.title, description: data.description ?? null, status: data.status ?? 'pending', priority: data.priority ?? 0,
@@ -362,13 +592,13 @@ export const api = {
       }
     },
     update: async (id: string, data: Partial<Todo>) => {
-      try { return await req<Todo>(`/todos/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('todos', await req<Todo>(`/todos/${id}`, { method: 'PUT', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('todos', offlineRecord('todos', id, data as Record<string, unknown>)) as Todo
       }
     },
     toggle: async (id: string, lateReason?: string, restoreReason?: string) => {
-      try { return await req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ lateReason, restoreReason }) }) } catch (error) {
+      try { return remember('todos', await req<Todo>(`/todos/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ lateReason, restoreReason }) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         const current = cachedBucket<Todo>('todos').find((todo) => todo.id === id)
         if (!current) throw error
@@ -380,45 +610,77 @@ export const api = {
       }
     },
     remove: async (id: string) => {
-      try { return await req(`/todos/${id}`, { method: 'DELETE' }) } catch (error) {
+      try { await req(`/todos/${id}`, { method: 'DELETE' }); forget('todos', id); return null } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('todos', { id, deleted: true })
       }
     },
   },
   stats: {
-    summary: (categoryId?: string) => {
+    summary: async (categoryId?: string) => {
       const qs = categoryId ? `?${new URLSearchParams({ categoryId }).toString()}` : ''
-      return req<Summary>(`/stats/summary${qs}`)
+      const local = cachedBucket<TimeEntry>('timeEntries')
+      if (local.length) {
+        void req<Summary>(`/stats/summary${qs}`).catch(() => {})
+        return localSummary(categoryId)
+      }
+      try { return await req<Summary>(`/stats/summary${qs}`) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return localSummary(categoryId)
+      }
     },
-    daily: (params: { days?: number; from?: string; to?: string; categoryId?: string } = {}) => {
+    daily: async (params: { days?: number; from?: string; to?: string; categoryId?: string } = {}) => {
       const q = new URLSearchParams()
       if (params.days) q.set('days', String(params.days))
       if (params.from) q.set('from', params.from)
       if (params.to) q.set('to', params.to)
       if (params.categoryId) q.set('categoryId', params.categoryId)
-      return req<DailyStat[]>(`/stats/daily?${q}`)
+      const local = cachedBucket<TimeEntry>('timeEntries')
+      if (local.length) {
+        void req<DailyStat[]>(`/stats/daily?${q}`).catch(() => {})
+        return localDaily(params)
+      }
+      try { return await req<DailyStat[]>(`/stats/daily?${q}`) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return localDaily(params)
+      }
     },
-    byTag: (from?: string, to?: string, categoryId?: string) => {
+    byTag: async (from?: string, to?: string, categoryId?: string) => {
       const q = new URLSearchParams()
       if (from) q.set('from', from)
       if (to) q.set('to', to)
       if (categoryId) q.set('categoryId', categoryId)
       const qs = q.toString()
-      return req<TagStat[]>(`/stats/by-tag${qs ? `?${qs}` : ''}`)
+      const local = cachedBucket<TimeEntry>('timeEntries')
+      if (local.length) {
+        void req<TagStat[]>(`/stats/by-tag${qs ? `?${qs}` : ''}`).catch(() => {})
+        return localByTag(from, to, categoryId)
+      }
+      try { return await req<TagStat[]>(`/stats/by-tag${qs ? `?${qs}` : ''}`) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return localByTag(from, to, categoryId)
+      }
     },
-    fragmentation: (from?: string, to?: string) => {
+    fragmentation: async (from?: string, to?: string) => {
       const q = new URLSearchParams()
       if (from) q.set('from', from)
       if (to) q.set('to', to)
       const qs = q.toString()
-      return req<{ tags: FragmentationStat[] }>(`/stats/fragmentation${qs ? `?${qs}` : ''}`)
+      const local = cachedBucket<TimeEntry>('timeEntries')
+      if (local.length) {
+        void req<{ tags: FragmentationStat[] }>(`/stats/fragmentation${qs ? `?${qs}` : ''}`).catch(() => {})
+        return localFragmentation(from, to)
+      }
+      try { return await req<{ tags: FragmentationStat[] }>(`/stats/fragmentation${qs ? `?${qs}` : ''}`) } catch (error) {
+        if (!isOfflineError(error)) throw error
+        return localFragmentation(from, to)
+      }
     },
   },
   goals: {
     list: () => offlineList(() => req<Goal[]>('/goals'), 'goals'),
     create: async (data: { tagId: string; title: string; kind?: string; type?: string; target?: number; period?: string; periodDays?: number | null; deadlineTime?: string | null; deadlineDay?: number | null; deadlineAt?: string | null }) => {
-      try { return await req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('goals', await req<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('goals', offlineRecord('goals', undefined, {
           tagId: data.tagId, title: data.title, kind: data.kind ?? 'tracking', type: data.type ?? 'count', target: data.target ?? 1,
@@ -428,13 +690,13 @@ export const api = {
       }
     },
     update: async (id: string, data: Partial<Goal>) => {
-      try { return await req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('goals', await req<Goal>(`/goals/${id}`, { method: 'PUT', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('goals', offlineRecord('goals', id, data as Record<string, unknown>)) as Goal
       }
     },
     remove: async (id: string) => {
-      try { return await req(`/goals/${id}`, { method: 'DELETE' }) } catch (error) {
+      try { await req(`/goals/${id}`, { method: 'DELETE' }); forget('goals', id); return null } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('goals', { id, deleted: true })
       }
@@ -450,7 +712,7 @@ export const api = {
       if (params?.to) q.set('to', params.to)
       if (params?.standaloneOnly) q.set('standaloneOnly', String(params.standaloneOnly))
       if (params?.type) q.set('type', params.type)
-      return offlineList(async () => req<Memo[]>(`/memos?${q}`), 'memos').then((items) => items.filter((memo) => {
+      return offlineList(async () => req<Memo[]>(`/memos?${q}`), 'memos', false).then((items) => items.filter((memo) => {
         if (params?.timeEntryId && memo.timeEntryId !== params.timeEntryId) return false
         if (params?.tagId && memo.tagId !== params.tagId) return false
         if (params?.type && memo.type !== params.type) return false
@@ -470,7 +732,7 @@ export const api = {
       createdAt?: string
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
     }) => {
-      try { return await req<Memo>('/memos', { method: 'POST', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('memos', await req<Memo>('/memos', { method: 'POST', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('memos', offlineRecord('memos', undefined, {
           content: data.content, type: data.type ?? 'diary', timeEntryId: data.timeEntryId ?? null, tagId: data.tagId ?? null,
@@ -483,7 +745,7 @@ export const api = {
       createdAt?: string
       attachments?: { filename: string; path: string; mimeType: string; size: number }[]
     }) => {
-      try { return await req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) }) } catch (error) {
+      try { return remember('memos', await req<Memo>(`/memos/${id}`, { method: 'PUT', body: JSON.stringify(data) })) } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('memos', offlineRecord('memos', id, data as Record<string, unknown>)) as Memo
       }
@@ -519,7 +781,7 @@ export const api = {
       return res.json() as Promise<{ filename: string; path: string; mimeType: string; size: number }>
     },
     remove: async (id: string) => {
-      try { return await req(`/memos/${id}`, { method: 'DELETE' }) } catch (error) {
+      try { await req(`/memos/${id}`, { method: 'DELETE' }); forget('memos', id); return null } catch (error) {
         if (!isOfflineError(error)) throw error
         return queueOffline('memos', { id, deleted: true })
       }
