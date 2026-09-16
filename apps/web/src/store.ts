@@ -136,7 +136,7 @@ export const useStore = create<AppState>((set, get) => ({
       const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
 
       const pendingEntries = Array.isArray(pendingQueue.timeEntries) ? pendingQueue.timeEntries : []
-      const mergedRunning = [...runningList.filter((entry) => !pendingEntries.some((local: TimeEntry) => local.id === entry.id)), ...pendingEntries.filter((entry: TimeEntry) => !entry.endTime)]
+      const mergedRunning = [...runningList.filter((entry: TimeEntry) => !pendingEntries.some((local: TimeEntry) => local.id === entry.id)), ...pendingEntries.filter((entry: TimeEntry) => !entry.endTime)]
       set({ categories: categoriesList, tags: tagsList, running: mergedRunning, pending: pendingList, clockOffset, loading: false })
       syncNativeNotification(runningList)
     } catch (e) {
