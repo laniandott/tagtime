@@ -12,6 +12,7 @@ export type SyncState = {
 
 const STORAGE_KEY = 'tagtime.sync'
 const PENDING_QUEUE_KEY = 'tagtime.sync.pending'
+const SNAPSHOT_KEY = 'tagtime.sync.snapshot'
 let syncPromise: Promise<boolean> | null = null
 
 export function loadSyncState(): SyncState {
@@ -104,12 +105,21 @@ async function runSyncInternal(): Promise<boolean> {
     }
 
     const nextCursor = typeof result.cursor === 'number' ? result.cursor : remoteCursor
-    clearPendingQueue()
+    // Only acknowledge the batch we sent; edits made while the request was in flight remain queued.
+    const current = loadPendingQueue()
+    const remaining = { ...current }
+    for (const key of Object.keys(pending) as (keyof typeof pending)[]) {
+      const sent = new Set((pending[key] ?? []).map((item: any) => item?.id))
+      remaining[key] = (current[key] ?? []).filter((item: any) => !sent.has(item?.id) || JSON.stringify(item) !== JSON.stringify((pending[key] ?? []).find((x: any) => x?.id === item?.id)))
+    }
+    if (Object.values(remaining).some((items) => items.length)) localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(remaining))
+    else clearPendingQueue()
+    try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(result)) } catch { /* best effort */ }
     saveSyncState({
       status: 'synced',
       cursor: nextCursor,
       lastSyncedAt: new Date().toISOString(),
-      pendingCount: 0,
+      pendingCount: Object.values(remaining).reduce((sum, items) => sum + items.length, 0),
     })
     return true
   } catch (e: any) {
