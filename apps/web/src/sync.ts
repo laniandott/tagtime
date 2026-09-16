@@ -121,6 +121,7 @@ async function runSyncInternal(): Promise<boolean> {
       lastSyncedAt: new Date().toISOString(),
       pendingCount: Object.values(remaining).reduce((sum, items) => sum + items.length, 0),
     })
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('tagtime-sync-complete'))
     return true
   } catch (e: any) {
     saveSyncState({

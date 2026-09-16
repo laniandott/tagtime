@@ -83,6 +83,7 @@ async function syncNativeNotification(running: TimeEntry[]) {
 
 // 页面重新获得焦点（如从通知栏切回 App）时自动刷新计时与常驻通知
 if (typeof window !== 'undefined') {
+  window.addEventListener('tagtime-sync-complete', () => { void useStore.getState().loadAll() })
   window.addEventListener('focus', () => {
     useStore.getState().loadRunning()
   })
