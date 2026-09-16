@@ -189,6 +189,10 @@ export function clearPendingQueue(): void {
   localStorage.removeItem(PENDING_QUEUE_KEY)
 }
 
+export function hasPendingChanges(): boolean {
+  return Object.values(loadPendingQueue()).some((items) => Array.isArray(items) && items.length > 0)
+}
+
 export function updatePendingCount(): void {
   if (typeof localStorage === 'undefined') return
   try {
@@ -203,8 +207,13 @@ export function updatePendingCount(): void {
 
 export function initSyncAuto(): void {
   if (typeof window === 'undefined') return
-  window.addEventListener('online', () => {
-    void runSync()
+  const trySync = () => { if (hasPendingChanges()) void runSync() }
+  window.addEventListener('online', trySync)
+  window.addEventListener('focus', trySync)
+  window.addEventListener('pageshow', trySync)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') trySync()
   })
-  window.setInterval(() => { if (navigator.onLine) void runSync() }, 10_000)
+  // WebViews may keep navigator.onLine stale after airplane mode; queue presence is the source of truth.
+  window.setInterval(trySync, 10_000)
 }
