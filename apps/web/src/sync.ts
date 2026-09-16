@@ -15,6 +15,11 @@ const PENDING_QUEUE_KEY = 'tagtime.sync.pending'
 const SNAPSHOT_KEY = 'tagtime.sync.snapshot'
 let syncPromise: Promise<boolean> | null = null
 
+export function loadCachedSnapshot(): any | null {
+  if (typeof localStorage === 'undefined') return null
+  try { const raw = localStorage.getItem(SNAPSHOT_KEY); return raw ? JSON.parse(raw) : null } catch { return null }
+}
+
 export function loadSyncState(): SyncState {
   if (typeof localStorage === 'undefined') {
     return { status: 'synced', cursor: 0, lastSyncedAt: null, pendingCount: 0 }

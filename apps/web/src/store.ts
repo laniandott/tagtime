@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Category, Tag, TimeEntry } from './types'
 import { api } from './api'
-import { enqueuePending, runSync } from './sync'
+import { enqueuePending, runSync, loadCachedSnapshot, loadPendingQueue } from './sync'
 
 function localId(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -117,23 +117,27 @@ export const useStore = create<AppState>((set, get) => ({
       if (requestSequence !== loadAllRequestSequence) return
 
       const current = get()
+      const cached = loadCachedSnapshot()
+      const pendingQueue = loadPendingQueue()
       const categoriesList = categoriesResult.status === 'fulfilled' && Array.isArray(categoriesResult.value)
         ? categoriesResult.value
-        : current.categories
+        : (Array.isArray(cached?.categories) ? cached.categories : current.categories)
       const tagsList = tagsResult.status === 'fulfilled' && Array.isArray(tagsResult.value)
         ? tagsResult.value
-        : current.tags
+        : (Array.isArray(cached?.tags) ? cached.tags : current.tags)
       const timerData = timerResult.status === 'fulfilled' ? timerResult.value : null
       const pendingData = pendingResult.status === 'fulfilled' ? pendingResult.value : null
       // 若期间已有更晚的 loadRunning，保留它的结果，避免旧的 loadAll 覆盖新计时状态。
       const runningList = runningSequenceAtStart === runningRequestSequence && timerData && Array.isArray(timerData.running)
         ? timerData.running
-        : current.running
+        : (Array.isArray(cached?.timeEntries) ? cached.timeEntries.filter((entry: TimeEntry) => !entry.endTime) : current.running)
       const pendingList = pendingData && Array.isArray(pendingData.pending) ? pendingData.pending : current.pending
       const serverMs = timerData?.serverTime ? new Date(timerData.serverTime).getTime() : NaN
       const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
 
-      set({ categories: categoriesList, tags: tagsList, running: runningList, pending: pendingList, clockOffset, loading: false })
+      const pendingEntries = Array.isArray(pendingQueue.timeEntries) ? pendingQueue.timeEntries : []
+      const mergedRunning = [...runningList.filter((entry) => !pendingEntries.some((local: TimeEntry) => local.id === entry.id)), ...pendingEntries.filter((entry: TimeEntry) => !entry.endTime)]
+      set({ categories: categoriesList, tags: tagsList, running: mergedRunning, pending: pendingList, clockOffset, loading: false })
       syncNativeNotification(runningList)
     } catch (e) {
       console.error('loadAll error:', e)
