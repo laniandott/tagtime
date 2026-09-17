@@ -40,6 +40,7 @@ export default function TimerPage() {
     categories,
     running,
     pending,
+    loadRunning,
     start,
     stop,
     stopAll,
@@ -192,6 +193,7 @@ export default function TimerPage() {
     if (confirm('确定要删除这条时间记录吗？')) {
       try {
         await api.timer.remove(id)
+        await loadRunning()
         await loadRecent()
       } catch (e) {
         alert(e instanceof Error ? e.message : '删除时间记录失败')
