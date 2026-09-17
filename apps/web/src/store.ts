@@ -1,11 +1,7 @@
 import { create } from 'zustand'
 import type { Category, Tag, TimeEntry } from './types'
-import { api } from './api'
+import { api, hydrateTimeEntries } from './api'
 import { enqueuePending, runSync, loadCachedSnapshot, loadPendingQueue } from './sync'
-
-function localId(): string {
-  return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
 
 interface AppState {
   categories: Category[]
@@ -136,9 +132,13 @@ export const useStore = create<AppState>((set, get) => ({
       const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
 
       const pendingEntries = Array.isArray(pendingQueue.timeEntries) ? pendingQueue.timeEntries : []
-      const mergedRunning = [...runningList.filter((entry: TimeEntry) => !pendingEntries.some((local: TimeEntry) => local.id === entry.id)), ...pendingEntries.filter((entry: TimeEntry) => !entry.endTime)]
-      set({ categories: categoriesList, tags: tagsList, running: mergedRunning, pending: pendingList, clockOffset, loading: false })
-      syncNativeNotification(runningList)
+      const mergedRunning = [
+        ...hydrateTimeEntries(runningList.filter((entry: TimeEntry) => !pendingEntries.some((local: TimeEntry) => local.id === entry.id))),
+        ...hydrateTimeEntries(pendingEntries.filter((entry: TimeEntry) => !entry.endTime)),
+      ]
+      const hydratedPending = hydrateTimeEntries(pendingList)
+      set({ categories: categoriesList, tags: tagsList, running: mergedRunning, pending: hydratedPending, clockOffset, loading: false })
+      syncNativeNotification(mergedRunning)
     } catch (e) {
       console.error('loadAll error:', e)
       if (requestSequence === loadAllRequestSequence) set({ loading: false })
@@ -154,8 +154,9 @@ export const useStore = create<AppState>((set, get) => ({
       const runningList = Array.isArray(timerData?.running) ? timerData.running : current.running
       const serverMs = timerData?.serverTime ? new Date(timerData.serverTime).getTime() : NaN
       const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
-      set({ running: runningList, clockOffset })
-      syncNativeNotification(runningList)
+      const hydratedRunning = hydrateTimeEntries(runningList)
+      set({ running: hydratedRunning, clockOffset })
+      syncNativeNotification(hydratedRunning)
     } catch (e) {
       console.error('loadRunning error:', e)
     }
@@ -165,29 +166,22 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const data = await api.timer.pending()
       const pendingList = Array.isArray(data?.pending) ? data.pending : []
-      set({ pending: pendingList })
+      set({ pending: hydrateTimeEntries(pendingList) })
     } catch (e) {
       console.error('loadPending error:', e)
     }
   },
 
   start: async (tagId, note, todoId, interruptedFromId) => {
-    try {
-      const res = await api.timer.start({ tagId, note, todoId, interruptedFromId })
-      const { serverTime, ...entry } = res
-      const clockOffset = Date.now() - new Date(serverTime).getTime()
-      const newRunning = [...get().running, entry]
-      set({ running: newRunning, clockOffset })
-      syncNativeNotification(newRunning)
-      await get().loadPending()
-      enqueuePending({ timeEntries: [entry] })
-      void runSync()
-    } catch {
-      const entry: TimeEntry = { id: localId(), startTime: new Date().toISOString(), endTime: null, note: note ?? null, tagId, todoId: todoId ?? null, pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: null, interruptedFromId: interruptedFromId ?? null }
-      const newRunning = [...get().running, entry]
-      set({ running: newRunning })
-      enqueuePending({ timeEntries: [entry] })
-    }
+    const res = await api.timer.start({ tagId, note, todoId, interruptedFromId })
+    const { serverTime, ...entry } = res
+    const clockOffset = Date.now() - new Date(serverTime).getTime()
+    const newRunning = [...get().running.filter((item) => item.id !== entry.id), ...hydrateTimeEntries([entry])]
+    set({ running: newRunning, clockOffset })
+    syncNativeNotification(newRunning)
+    await get().loadPending()
+    enqueuePending({ timeEntries: [entry] })
+    void runSync()
   },
 
   stop: async (id, note, pendingResume) => {
@@ -226,7 +220,7 @@ export const useStore = create<AppState>((set, get) => ({
     })
     const { serverTime, ...entry } = res
     const clockOffset = Date.now() - new Date(serverTime).getTime()
-    const newRunning = [...get().running, entry]
+    const newRunning = [...get().running.filter((item) => item.id !== entry.id), ...hydrateTimeEntries([entry])]
     set({ running: newRunning, clockOffset })
     syncNativeNotification(newRunning)
     await get().loadPending()

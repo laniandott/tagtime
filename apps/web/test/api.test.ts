@@ -115,3 +115,44 @@ test('在线读取后重载仍优先显示本地数据', async () => {
   setFetch(async () => { throw new TypeError('offline') })
   assert.equal((await api.categories.list())[0].id, 'persisted-category')
 })
+
+test('离线计时保留标签名称，且服务器 404 删除也会清理本地记录', async () => {
+  const values = new Map<string, string>()
+  ;(globalThis as any).localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+  }
+  setFetch(async () => { throw new TypeError('offline') })
+
+  const tag = await api.tags.create({ name: '离线标签' })
+  const entry = await api.timer.start({ tagId: tag.id })
+  const listed = await api.timer.list()
+  assert.equal(listed.find((item) => item.id === entry.id)?.tag?.name, '离线标签')
+
+  setFetch(async (input, init) => {
+    if (String(input).includes('/timer/') && init?.method === 'DELETE') return new Response('{"error":"不存在"}', { status: 404 })
+    throw new TypeError('offline')
+  })
+  await api.timer.remove(entry.id)
+  assert.equal((await api.timer.list()).some((item) => item.id === entry.id), false)
+})
+
+test('离线启动使用同一个客户端 ID，避免请求超时后生成重复记录', async () => {
+  const values = new Map<string, string>()
+  ;(globalThis as any).localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+  }
+  let requestId = ''
+  setFetch(async (input, init) => {
+    if (String(input).endsWith('/api/timer/start')) requestId = JSON.parse(String(init?.body)).id
+    throw new TypeError('offline')
+  })
+  const created = await api.timer.start({ tagId: 'offline-tag' })
+  assert.ok(requestId)
+  assert.equal(created.id, requestId)
+})

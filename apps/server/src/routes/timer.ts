@@ -139,7 +139,8 @@ export default async function timerRoutes(app: FastifyInstance) {
   // 开始计时：传入 tagId，可选 note、todoId、resumedFromId、interruptedFromId
   // 支持同步计时——不会自动结束其他进行中的计时
   app.post('/start', async (req, reply) => {
-    const { tagId, note, todoId, resumedFromId, interruptedFromId } = (req.body ?? {}) as {
+    const { id, tagId, note, todoId, resumedFromId, interruptedFromId } = (req.body ?? {}) as {
+      id?: string
       tagId: string
       note?: string
       todoId?: string
@@ -150,6 +151,12 @@ export default async function timerRoutes(app: FastifyInstance) {
     if (!await validateReferences(tagId, todoId, reply)) return
     if (resumedFromId && interruptedFromId) {
       return reply.code(400).send({ error: '续接和接管不能同时指定' })
+    }
+
+    // 客户端重试同一个请求时直接返回已创建记录，避免重复计时。
+    if (id) {
+      const existing = await prisma.timeEntry.findUnique({ where: { id }, include: timeEntryInclude })
+      if (existing) return { ...existing, serverTime: new Date().toISOString() }
     }
 
     // 续接逻辑：校验 resumedFromId
@@ -201,6 +208,7 @@ export default async function timerRoutes(app: FastifyInstance) {
         }
         return tx.timeEntry.create({
           data: {
+            ...(id ? { id } : {}),
             tagId,
             note: finalNote,
             todoId: finalTodoId || null,

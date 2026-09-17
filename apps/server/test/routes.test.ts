@@ -984,3 +984,18 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   assert.equal(await prisma.timeEntry.count({ where: { id: ids.entry } }), 0)
   assert.equal(await prisma.memo.count({ where: { id: ids.memo } }), 0)
 })
+
+test('计时启动：重复客户端 ID 只创建一条记录', async () => {
+  const tag = await prisma.tag.create({ data: { name: `幂等启动-${Date.now()}` } })
+  const id = `client-start-${Date.now()}`
+  const payload = { id, tagId: tag.id }
+  const first = await app.inject({ method: 'POST', url: '/api/timer/start', payload })
+  const second = await app.inject({ method: 'POST', url: '/api/timer/start', payload })
+  assert.equal(first.statusCode, 200)
+  assert.equal(second.statusCode, 200)
+  assert.equal(first.json().id, id)
+  assert.equal(second.json().id, id)
+  assert.equal(await prisma.timeEntry.count({ where: { id } }), 1)
+  await prisma.timeEntry.delete({ where: { id } })
+  await prisma.tag.delete({ where: { id: tag.id } })
+})

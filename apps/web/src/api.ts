@@ -242,6 +242,29 @@ function cachedBucket<T extends { id: string }>(bucket: OfflineBucket): T[] {
   return Array.from(map.values())
 }
 
+function createTimeEntryHydrator(): (entry: TimeEntry) => TimeEntry {
+  const categories = new Map(cachedBucket<Category>('categories').map((category) => [category.id, category]))
+  const tags = new Map(cachedBucket<Tag>('tags').map((tag) => [tag.id, {
+    ...tag,
+    category: categories.get(tag.categoryId ?? '') ?? tag.category ?? null,
+  }]))
+  const todos = new Map(cachedBucket<Todo>('todos').map((todo) => [todo.id, {
+    ...todo,
+    category: categories.get(todo.categoryId ?? '') ?? todo.category ?? null,
+    tag: tags.get(todo.tagId ?? '') ?? todo.tag ?? null,
+  }]))
+  return (entry) => ({
+    ...entry,
+    tag: tags.get(entry.tagId) ?? entry.tag ?? null,
+    todo: todos.get(entry.todoId ?? '') ?? entry.todo ?? null,
+  })
+}
+
+export function hydrateTimeEntries(entries: TimeEntry[]): TimeEntry[] {
+  const hydrate = createTimeEntryHydrator()
+  return entries.map(hydrate)
+}
+
 function queueOffline(bucket: OfflineBucket, item: Record<string, unknown>): any {
   saveLocalRecord(bucket, item as { id: string; deleted?: boolean })
   enqueuePending({ [bucket]: [item] } as any)
@@ -279,7 +302,7 @@ function forget(bucket: OfflineBucket, id: string): void {
 }
 
 function localTimeEntries(params?: { from?: string; to?: string; tagId?: string }): TimeEntry[] {
-  return cachedBucket<TimeEntry>('timeEntries').filter((entry) => {
+  return hydrateTimeEntries(cachedBucket<TimeEntry>('timeEntries')).filter((entry) => {
     const start = new Date(entry.startTime).getTime()
     if (params?.from && start < new Date(params.from).getTime()) return false
     if (params?.to && start > new Date(params.to).getTime()) return false
@@ -442,7 +465,7 @@ export const api = {
         void req<{ running: TimeEntry[]; serverTime: string }>('/timer/current').then((data) => {
           for (const entry of data.running) saveLocalRecord('timeEntries', entry)
         }).catch(() => {})
-        return { running: local.filter((entry) => !entry.endTime && !entry.dismissed), serverTime: new Date().toISOString() }
+        return { running: hydrateTimeEntries(local.filter((entry) => !entry.endTime && !entry.dismissed)), serverTime: new Date().toISOString() }
       }
       try {
         const data = await req<{ running: TimeEntry[]; serverTime: string }>('/timer/current')
@@ -450,21 +473,22 @@ export const api = {
         return data
       } catch (error) {
         if (!isOfflineError(error)) throw error
-        return { running: local.filter((entry) => !entry.endTime && !entry.dismissed), serverTime: new Date().toISOString() }
+        return { running: hydrateTimeEntries(local.filter((entry) => !entry.endTime && !entry.dismissed)), serverTime: new Date().toISOString() }
       }
     },
     start: async (data: { tagId: string; note?: string; todoId?: string; resumedFromId?: string; interruptedFromId?: string }) => {
+      const id = localId()
       try {
-        const result = await req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify(data) })
+        const result = await req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify({ ...data, id }) })
         remember('timeEntries', result)
         return result
       } catch (error) {
         if (!isOfflineError(error)) throw error
-        const local = queueOffline('timeEntries', offlineRecord('timeEntries', undefined, {
+        const local = queueOffline('timeEntries', offlineRecord('timeEntries', id, {
           startTime: new Date().toISOString(), endTime: null, note: data.note ?? null, tagId: data.tagId, todoId: data.todoId ?? null,
           pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: data.resumedFromId ?? null, interruptedFromId: data.interruptedFromId ?? null,
         })) as TimeEntry
-        return { ...local, serverTime: new Date().toISOString() }
+        return { ...hydrateTimeEntries([local])[0], serverTime: new Date().toISOString() }
       }
     },
     stop: async (id: string, note?: string, pendingResume?: boolean) => {
@@ -506,7 +530,7 @@ export const api = {
       if (params?.from) q.set('from', params.from)
       if (params?.to) q.set('to', params.to)
       if (params?.tagId) q.set('tagId', params.tagId)
-      return offlineList(async () => req<TimeEntry[]>(`/timer?${q}`), 'timeEntries', false).then((items) => items.filter((entry) => {
+      return offlineList(async () => req<TimeEntry[]>(`/timer?${q}`), 'timeEntries', false).then((items) => hydrateTimeEntries(items).filter((entry) => {
         const start = new Date(entry.startTime).getTime()
         return (!params?.from || start >= new Date(params.from).getTime()) &&
           (!params?.to || start <= new Date(params.to).getTime()) &&
@@ -519,7 +543,7 @@ export const api = {
         void req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending').then((data) => {
           for (const entry of data.pending) saveLocalRecord('timeEntries', entry)
         }).catch(() => {})
-        return { serverTime: new Date().toISOString(), pending: local }
+        return { serverTime: new Date().toISOString(), pending: hydrateTimeEntries(local) }
       }
       try {
         const data = await req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending')
@@ -527,7 +551,7 @@ export const api = {
         return data
       } catch (error) {
         if (!isOfflineError(error)) throw error
-        return { serverTime: new Date().toISOString(), pending: localPendingEntries() }
+        return { serverTime: new Date().toISOString(), pending: hydrateTimeEntries(localPendingEntries()) }
       }
     },
     dismissPending: async (id: string, reason: string) => {
@@ -541,10 +565,12 @@ export const api = {
     terminateChain: (id: string, reason: string) =>
       req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) }),
     remove: async (id: string) => {
-      try { await req(`/timer/${id}`, { method: 'DELETE' }); forget('timeEntries', id); return null } catch (error) {
-        if (!isOfflineError(error)) throw error
-        return queueOffline('timeEntries', { id, deleted: true })
+      try {
+        await req(`/timer/${id}`, { method: 'DELETE' })
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404) && !isOfflineError(error)) throw error
       }
+      return queueOffline('timeEntries', { id, deleted: true })
     },
     manual: async (data: { tagId: string; startTime: string; endTime: string; note?: string; todoId?: string }) => {
       try {
