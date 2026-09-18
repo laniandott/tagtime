@@ -1,11 +1,27 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { api, normalizeServerHost, reqWithRetry, resolveUploadUrl } from '../src/api'
+import { runSync } from '../src/sync'
 
 const originalFetch = globalThis.fetch
 
 function setFetch(handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>): void {
   globalThis.fetch = handler as typeof fetch
+}
+
+function installLocalStorage(): Map<string, string> {
+  const values = new Map<string, string>()
+  ;(globalThis as any).localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+  }
+  return values
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 test.afterEach(() => {
@@ -155,4 +171,84 @@ test('离线启动使用同一个客户端 ID，避免请求超时后生成重�
   const created = await api.timer.start({ tagId: 'offline-tag' })
   assert.ok(requestId)
   assert.equal(created.id, requestId)
+})
+
+test('服务器当前计时为空时，本地不会永久保留过期的进行中记录', async () => {
+  const values = installLocalStorage()
+  values.set('tagtime.local.timeEntries', JSON.stringify([{
+    id: 'stale-running', startTime: '2026-09-18T08:00:00.000Z', endTime: null, tagId: 'tag',
+    pendingResume: false, dismissed: false,
+  }]))
+  setFetch(async (input) => {
+    if (String(input).endsWith('/api/timer/current')) {
+      return new Response(JSON.stringify({ running: [], serverTime: '2026-09-18T09:00:00.000Z' }), { status: 200 })
+    }
+    throw new TypeError('unexpected request')
+  })
+
+  assert.equal((await api.timer.current()).running.length, 1)
+  await tick()
+  assert.equal((await api.timer.current()).running.length, 0)
+})
+
+test('服务器已消费待续记录后，本地待续列表会清除旧状态', async () => {
+  const values = installLocalStorage()
+  values.set('tagtime.local.timeEntries', JSON.stringify([{
+    id: 'stale-pending', startTime: '2026-09-18T08:00:00.000Z', endTime: '2026-09-18T08:30:00.000Z', tagId: 'tag',
+    pendingResume: true, dismissed: false,
+  }]))
+  setFetch(async (input) => {
+    if (String(input).endsWith('/api/timer/pending')) {
+      return new Response(JSON.stringify({ pending: [], serverTime: '2026-09-18T09:00:00.000Z' }), { status: 200 })
+    }
+    throw new TypeError('unexpected request')
+  })
+
+  assert.equal((await api.timer.pending()).pending.length, 1)
+  await tick()
+  assert.equal((await api.timer.pending()).pending.length, 0)
+})
+
+test('离线续接会消费旧待续记录，不会生成两个待续状态', async () => {
+  const values = installLocalStorage()
+  values.set('tagtime.local.timeEntries', JSON.stringify([{
+    id: 'parent', startTime: '2026-09-18T08:00:00.000Z', endTime: '2026-09-18T08:30:00.000Z', tagId: 'tag',
+    pendingResume: true, dismissed: false, note: '继续处理',
+  }]))
+  setFetch(async () => { throw new TypeError('offline') })
+
+  const child = await api.timer.start({ tagId: 'tag', resumedFromId: 'parent' })
+  assert.equal(child.resumedFromId, 'parent')
+  assert.equal((await api.timer.pending()).pending.length, 0)
+})
+
+test('同步请求期间的新本地修改不会被旧服务器快照覆盖', async () => {
+  const values = installLocalStorage()
+  values.set('tagtime_server_url', 'http://sync.test')
+  const original = { id: 'local-entry', startTime: '2026-09-18T08:00:00.000Z', endTime: null, tagId: 'tag', note: '旧', pendingResume: false, dismissed: false }
+  const changed = { ...original, note: '新' }
+  values.set('tagtime.sync.pending', JSON.stringify({ categories: [], tags: [], goals: [], todos: [], timeEntries: [original], memos: [] }))
+  let releasePost!: () => void
+  let postStarted!: () => void
+  const postEntered = new Promise<void>((resolve) => { postStarted = resolve })
+  const postGate = new Promise<void>((resolve) => { releasePost = resolve })
+  setFetch(async (input, init) => {
+    if (String(input).endsWith('/api/sync') && (init?.method ?? 'GET') === 'GET') {
+      return new Response(JSON.stringify({ cursor: 1, categories: [], tags: [], goals: [], todos: [], timeEntries: [], memos: [] }), { status: 200 })
+    }
+    if (String(input).endsWith('/api/sync') && init?.method === 'POST') {
+      postStarted()
+      await postGate
+      return new Response(JSON.stringify({ cursor: 2, categories: [], tags: [], goals: [], todos: [], timeEntries: [], memos: [] }), { status: 200 })
+    }
+    throw new TypeError('unexpected request')
+  })
+
+  const syncing = runSync()
+  await postEntered
+  values.set('tagtime.sync.pending', JSON.stringify({ categories: [], tags: [], goals: [], todos: [], timeEntries: [changed], memos: [] }))
+  releasePost()
+  assert.equal(await syncing, true)
+  const local = JSON.parse(values.get('tagtime.local.timeEntries') ?? '[]')
+  assert.equal(local.find((item: any) => item.id === 'local-entry')?.note, '新')
 })

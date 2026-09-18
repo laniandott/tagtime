@@ -21,15 +21,24 @@ export function saveLocalBucket<T extends { id: string }>(bucket: LocalBucket, i
   try { localStorage.setItem(key(bucket), JSON.stringify(items)) } catch { /* best effort */ }
 }
 
-export function saveLocalRecord(bucket: LocalBucket, item: { id: string; deleted?: boolean }): void {
-  const items = loadLocalBucket<Record<string, unknown> & { id: string }>(bucket)
+export function saveLocalRecord<T extends { id: string }>(bucket: LocalBucket, item: T & { deleted?: boolean }): void {
+  const items = loadLocalBucket<{ id: string }>(bucket)
   const next = items.filter((current) => current.id !== item.id)
-  if (!item.deleted) next.push(item as Record<string, unknown> & { id: string })
+  if (!item.deleted) next.push(item)
   saveLocalBucket(bucket, next)
 }
 
-export function saveLocalSnapshot(snapshot: Partial<Record<LocalBucket, unknown>>): void {
+export function saveLocalSnapshot(
+  snapshot: Partial<Record<LocalBucket, unknown>>,
+  overlay: Partial<Record<LocalBucket, unknown[]>> = {},
+): void {
   for (const bucket of ['categories', 'tags', 'goals', 'todos', 'timeEntries', 'memos'] as const) {
-    if (Array.isArray(snapshot[bucket])) saveLocalBucket(bucket, snapshot[bucket] as { id: string }[])
+    if (!Array.isArray(snapshot[bucket])) continue
+    saveLocalBucket(bucket, snapshot[bucket] as { id: string }[])
+    for (const item of overlay[bucket] ?? []) {
+      if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+        saveLocalRecord(bucket, item as { id: string; deleted?: boolean })
+      }
+    }
   }
 }

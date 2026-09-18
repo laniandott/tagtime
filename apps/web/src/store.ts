@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Category, Tag, TimeEntry } from './types'
 import { api, hydrateTimeEntries } from './api'
-import { enqueuePending, runSync, loadCachedSnapshot, loadPendingQueue } from './sync'
+import { loadCachedSnapshot, loadPendingQueue } from './sync'
 
 interface AppState {
   categories: Category[]
@@ -80,6 +80,20 @@ async function syncNativeNotification(running: TimeEntry[]) {
 // 页面重新获得焦点（如从通知栏切回 App）时自动刷新计时与常驻通知
 if (typeof window !== 'undefined') {
   window.addEventListener('tagtime-sync-complete', () => { void useStore.getState().loadAll() })
+  window.addEventListener('tagtime-timer-current-refresh', (event) => {
+    const detail = (event as CustomEvent<{ running?: TimeEntry[]; serverTime?: string }>).detail
+    if (!detail || !Array.isArray(detail.running)) return
+    const current = useStore.getState()
+    const serverMs = detail.serverTime ? new Date(detail.serverTime).getTime() : NaN
+    const clockOffset = Number.isFinite(serverMs) ? Date.now() - serverMs : current.clockOffset
+    const running = hydrateTimeEntries(detail.running)
+    useStore.setState({ running, clockOffset })
+    syncNativeNotification(running)
+  })
+  window.addEventListener('tagtime-timer-pending-refresh', (event) => {
+    const detail = (event as CustomEvent<{ pending?: TimeEntry[] }>).detail
+    if (detail && Array.isArray(detail.pending)) useStore.setState({ pending: hydrateTimeEntries(detail.pending) })
+  })
   window.addEventListener('focus', () => {
     useStore.getState().loadRunning()
   })
@@ -180,8 +194,6 @@ export const useStore = create<AppState>((set, get) => ({
     set({ running: newRunning, clockOffset })
     syncNativeNotification(newRunning)
     await get().loadPending()
-    enqueuePending({ timeEntries: [entry] })
-    void runSync()
   },
 
   stop: async (id, note, pendingResume) => {
@@ -196,8 +208,6 @@ export const useStore = create<AppState>((set, get) => ({
     syncNativeNotification(newRunning)
     await get().loadPending().catch(() => {})
     await get().loadAll().catch(() => {})
-    enqueuePending({ timeEntries: [stopped] })
-    void runSync()
     return stopped
   },
 

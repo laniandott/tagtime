@@ -121,7 +121,7 @@ async function runSyncInternal(): Promise<boolean> {
     if (Object.values(remaining).some((items) => items.length)) localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(remaining))
     else clearPendingQueue()
     try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(result)) } catch { /* best effort */ }
-    saveLocalSnapshot(result)
+    saveLocalSnapshot(result, remaining)
     saveSyncState({
       status: 'synced',
       cursor: nextCursor,
