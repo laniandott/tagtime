@@ -215,6 +215,46 @@ export async function reqWithRetry<T>(path: string, opts?: RequestOptions): Prom
 export const req = reqWithRetry
 
 type OfflineBucket = 'categories' | 'tags' | 'goals' | 'todos' | 'timeEntries' | 'memos'
+const RUNNING_IDS_KEY = 'tagtime.timer.running'
+let timerMutationVersion = 0
+
+function loadKnownRunningIds(): Set<string> | null {
+  if (typeof localStorage === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(RUNNING_IDS_KEY)
+    if (raw === null) return null
+    const parsed = JSON.parse(raw)
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [])
+  } catch {
+    return null
+  }
+}
+
+function saveKnownRunningIds(entries: TimeEntry[]): void {
+  if (typeof localStorage === 'undefined') return
+  try { localStorage.setItem(RUNNING_IDS_KEY, JSON.stringify(entries.map((entry) => entry.id))) } catch { /* best effort */ }
+}
+
+function rememberRunningId(id: string): void {
+  const ids = loadKnownRunningIds() ?? new Set<string>()
+  ids.add(id)
+  try { localStorage.setItem(RUNNING_IDS_KEY, JSON.stringify(Array.from(ids))) } catch { /* best effort */ }
+}
+
+function forgetRunningId(id: string): void {
+  const ids = loadKnownRunningIds() ?? new Set<string>()
+  ids.delete(id)
+  try { localStorage.setItem(RUNNING_IDS_KEY, JSON.stringify(Array.from(ids))) } catch { /* best effort */ }
+}
+
+function clearKnownRunningIds(): void {
+  if (typeof localStorage === 'undefined') return
+  try { localStorage.setItem(RUNNING_IDS_KEY, '[]') } catch { /* best effort */ }
+}
+
+function emitTimerRefresh(type: 'current' | 'pending', detail: unknown): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(`tagtime-timer-${type}-refresh`, { detail }))
+}
 
 function localId(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID
@@ -313,6 +353,30 @@ function localTimeEntries(params?: { from?: string; to?: string; tagId?: string 
 
 function localPendingEntries(): TimeEntry[] {
   return cachedBucket<TimeEntry>('timeEntries').filter((entry) => entry.pendingResume && !entry.dismissed)
+}
+
+function localRunningEntries(): TimeEntry[] {
+  const known = loadKnownRunningIds()
+  const queuedIds = new Set(
+    (loadPendingQueue().timeEntries ?? [])
+      .filter((item: any) => !item.deleted && !item.endTime && !item.dismissed)
+      .map((item: TimeEntry) => item.id),
+  )
+  return cachedBucket<TimeEntry>('timeEntries').filter((entry) => {
+    if (entry.endTime || entry.dismissed) return false
+    return !known || known.has(entry.id) || queuedIds.has(entry.id)
+  })
+}
+
+function reconcilePendingCache(remotePending: TimeEntry[]): void {
+  const remoteIds = new Set(remotePending.map((entry) => entry.id))
+  const queuedIds = new Set((loadPendingQueue().timeEntries ?? []).map((entry: TimeEntry) => entry.id))
+  for (const entry of cachedBucket<TimeEntry>('timeEntries')) {
+    if (entry.pendingResume && !remoteIds.has(entry.id) && !queuedIds.has(entry.id)) {
+      saveLocalRecord('timeEntries', { ...entry, pendingResume: false })
+    }
+  }
+  for (const entry of remotePending) saveLocalRecord('timeEntries', entry)
 }
 
 function localDuration(entry: TimeEntry, from?: number, to?: number): number {
@@ -462,38 +526,60 @@ export const api = {
     current: async () => {
       const local = cachedBucket<TimeEntry>('timeEntries')
       if (local.length) {
+        const requestVersion = timerMutationVersion
         void req<{ running: TimeEntry[]; serverTime: string }>('/timer/current').then((data) => {
+          if (requestVersion !== timerMutationVersion) return
+          saveKnownRunningIds(data.running)
           for (const entry of data.running) saveLocalRecord('timeEntries', entry)
+          emitTimerRefresh('current', data)
         }).catch(() => {})
-        return { running: hydrateTimeEntries(local.filter((entry) => !entry.endTime && !entry.dismissed)), serverTime: new Date().toISOString() }
+        return { running: hydrateTimeEntries(localRunningEntries()), serverTime: new Date().toISOString() }
       }
       try {
+        const requestVersion = timerMutationVersion
         const data = await req<{ running: TimeEntry[]; serverTime: string }>('/timer/current')
+        if (requestVersion !== timerMutationVersion) {
+          return { running: hydrateTimeEntries(localRunningEntries()), serverTime: data.serverTime }
+        }
+        saveKnownRunningIds(data.running)
         for (const entry of data.running) saveLocalRecord('timeEntries', entry)
         return data
       } catch (error) {
         if (!isOfflineError(error)) throw error
-        return { running: hydrateTimeEntries(local.filter((entry) => !entry.endTime && !entry.dismissed)), serverTime: new Date().toISOString() }
+        return { running: hydrateTimeEntries(localRunningEntries()), serverTime: new Date().toISOString() }
       }
     },
     start: async (data: { tagId: string; note?: string; todoId?: string; resumedFromId?: string; interruptedFromId?: string }) => {
+      timerMutationVersion++
       const id = localId()
+      const startTime = new Date().toISOString()
       try {
         const result = await req<TimeEntry & { serverTime: string }>('/timer/start', { method: 'POST', body: JSON.stringify({ ...data, id }) })
         remember('timeEntries', result)
+        rememberRunningId(result.id)
+        if (data.resumedFromId) {
+          const parent = cachedBucket<TimeEntry>('timeEntries').find((entry) => entry.id === data.resumedFromId)
+          if (parent) saveLocalRecord('timeEntries', { ...parent, pendingResume: false })
+        }
         return result
       } catch (error) {
         if (!isOfflineError(error)) throw error
+        if (data.resumedFromId) {
+          const parent = cachedBucket<TimeEntry>('timeEntries').find((entry) => entry.id === data.resumedFromId)
+          if (parent) queueOffline('timeEntries', { ...parent, pendingResume: false })
+        }
         const local = queueOffline('timeEntries', offlineRecord('timeEntries', id, {
-          startTime: new Date().toISOString(), endTime: null, note: data.note ?? null, tagId: data.tagId, todoId: data.todoId ?? null,
+          startTime, endTime: null, note: data.note ?? null, tagId: data.tagId, todoId: data.todoId ?? null,
           pendingResume: false, dismissed: false, dismissReason: null, resumedFromId: data.resumedFromId ?? null, interruptedFromId: data.interruptedFromId ?? null,
         })) as TimeEntry
         return { ...hydrateTimeEntries([local])[0], serverTime: new Date().toISOString() }
       }
     },
     stop: async (id: string, note?: string, pendingResume?: boolean) => {
+      timerMutationVersion++
       try {
         const result = await req<TimeEntry>(`/timer/stop/${id}`, { method: 'POST', body: JSON.stringify({ note, pendingResume }) })
+        forgetRunningId(id)
         return remember('timeEntries', result)
       } catch (error) {
         if (!isOfflineError(error)) throw error
@@ -503,7 +589,12 @@ export const api = {
       }
     },
     stopAll: async () => {
-      try { return await req<{ count: number }>('/timer/stop', { method: 'POST' }) } catch (error) {
+      timerMutationVersion++
+      try {
+        const result = await req<{ count: number }>('/timer/stop', { method: 'POST' })
+        clearKnownRunningIds()
+        return result
+      } catch (error) {
         if (!isOfflineError(error)) throw error
         const running = cachedBucket<TimeEntry>('timeEntries').filter((entry) => !entry.endTime && !entry.dismissed)
         for (const entry of running) queueOffline('timeEntries', { ...entry, endTime: new Date().toISOString() })
@@ -540,14 +631,21 @@ export const api = {
     pending: async () => {
       const local = localPendingEntries()
       if (local.length) {
+        const requestVersion = timerMutationVersion
         void req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending').then((data) => {
-          for (const entry of data.pending) saveLocalRecord('timeEntries', entry)
+          if (requestVersion !== timerMutationVersion) return
+          reconcilePendingCache(data.pending)
+          emitTimerRefresh('pending', data)
         }).catch(() => {})
         return { serverTime: new Date().toISOString(), pending: hydrateTimeEntries(local) }
       }
       try {
+        const requestVersion = timerMutationVersion
         const data = await req<{ serverTime: string; pending: TimeEntry[] }>('/timer/pending')
-        for (const entry of data.pending) saveLocalRecord('timeEntries', entry)
+        if (requestVersion !== timerMutationVersion) {
+          return { serverTime: data.serverTime, pending: hydrateTimeEntries(localPendingEntries()) }
+        }
+        reconcilePendingCache(data.pending)
         return data
       } catch (error) {
         if (!isOfflineError(error)) throw error
@@ -555,12 +653,30 @@ export const api = {
       }
     },
     dismissPending: async (id: string, reason: string) => {
-      const result = await req<TimeEntry>(`/timer/${id}/dismiss-pending`, { method: 'POST', body: JSON.stringify({ reason }) })
-      return remember('timeEntries', result)
+      timerMutationVersion++
+      try {
+        const result = await req<TimeEntry>(`/timer/${id}/dismiss-pending`, { method: 'POST', body: JSON.stringify({ reason }) })
+        return remember('timeEntries', result)
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const current = cachedBucket<TimeEntry>('timeEntries').find((entry) => entry.id === id)
+        if (!current) throw error
+        const trimmed = reason.trim()
+        const note = current.note ? `${current.note}\n—— 已丢弃：${trimmed}` : `—— 已丢弃：${trimmed}`
+        return queueOffline('timeEntries', { ...current, pendingResume: false, dismissed: true, dismissReason: trimmed, note }) as TimeEntry
+      }
     },
     finishPending: async (id: string) => {
-      const result = await req<TimeEntry>(`/timer/${id}/finish-pending`, { method: 'POST' })
-      return remember('timeEntries', result)
+      timerMutationVersion++
+      try {
+        const result = await req<TimeEntry>(`/timer/${id}/finish-pending`, { method: 'POST' })
+        return remember('timeEntries', result)
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const current = cachedBucket<TimeEntry>('timeEntries').find((entry) => entry.id === id)
+        if (!current) throw error
+        return queueOffline('timeEntries', { ...current, pendingResume: false }) as TimeEntry
+      }
     },
     terminateChain: (id: string, reason: string) =>
       req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) }),
