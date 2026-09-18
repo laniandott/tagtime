@@ -85,6 +85,20 @@ export default function TimerPage() {
 
   useEffect(() => { void loadTodos() }, [])
 
+  // 手机或另一浏览器停止计时后，当前页面也要及时收敛到服务器状态。
+  useEffect(() => {
+    let active = true
+    const refresh = () => {
+      if (active && document.visibilityState === 'visible') void loadRunning()
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [loadRunning])
+
   // 加载最近记录（按日期范围筛选）
   const loadRecent = async () => {
     const sequence = ++loadRecentSequence.current

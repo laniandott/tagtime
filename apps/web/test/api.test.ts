@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { api, normalizeServerHost, reqWithRetry, resolveUploadUrl } from '../src/api'
+import { api, DEFAULT_SERVER_HOST, getServerHost, normalizeServerHost, reqWithRetry, resolveUploadUrl } from '../src/api'
 import { runSync } from '../src/sync'
 
 const originalFetch = globalThis.fetch
@@ -100,6 +100,12 @@ test('服务器地址只接受安全的 HTTP(S) 地址', () => {
   assert.equal(normalizeServerHost('file:///tmp/tagtime'), '')
   assert.equal(normalizeServerHost('https://user:pass@example.com'), '')
   assert.equal(normalizeServerHost('https://example.com/?token=secret'), '')
+})
+
+test('旧版 App 服务器地址自动迁移到公网 HTTPS 入口', () => {
+  const values = installLocalStorage()
+  values.set('tagtime_server_url', 'http://812264226.xyz:3000')
+  assert.equal(getServerHost(), DEFAULT_SERVER_HOST)
 })
 
 test('断网时分类先进入本地队列，列表可立即读回', async () => {

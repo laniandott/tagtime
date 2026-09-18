@@ -23,12 +23,21 @@ import type {
 import { enqueuePending, loadCachedSnapshot, loadPendingQueue, runSync } from './sync'
 import { loadLocalBucket, saveLocalBucket, saveLocalRecord } from './localStore'
 
+export const DEFAULT_SERVER_HOST = 'https://tag.812264226.xyz'
+const LEGACY_SERVER_HOSTS = new Set([
+  'http://812264226.xyz:3000',
+  'https://812264226.xyz:3000',
+  'http://812264226.xyz',
+  'https://812264226.xyz',
+  'http://tag.812264226.xyz',
+])
+
 export function getServerHost(): string {
   if (typeof localStorage !== 'undefined') {
     try {
       const custom = localStorage.getItem('tagtime_server_url')
       const normalized = normalizeServerHost(custom)
-      if (normalized) return normalized
+      if (normalized) return LEGACY_SERVER_HOSTS.has(normalized) ? DEFAULT_SERVER_HOST : normalized
     } catch {
       // 某些隐私模式/受限 WebView 会让 localStorage 读取抛异常，
       // 此时回退到构建配置或当前页面地址，不应让整个 API 层白屏。
@@ -36,7 +45,7 @@ export function getServerHost(): string {
   }
   const configured = import.meta.env?.VITE_API_URL
   const normalizedConfigured = normalizeServerHost(configured)
-  if (normalizedConfigured) return normalizedConfigured
+  if (normalizedConfigured) return LEGACY_SERVER_HOSTS.has(normalizedConfigured) ? DEFAULT_SERVER_HOST : normalizedConfigured
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol
 
@@ -46,7 +55,7 @@ export function getServerHost(): string {
       protocol === 'file:'
     )
     if (isNative) {
-      return 'http://812264226.xyz:3000'
+      return DEFAULT_SERVER_HOST
     }
   }
   return ''

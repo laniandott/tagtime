@@ -771,7 +771,7 @@ function SystemSettingsSection() {
               type="text"
               value={serverUrl}
               onChange={(e) => setServerUrlState(e.target.value)}
-              placeholder="例如: http://812264226.xyz:3000"
+              placeholder="例如: https://tag.812264226.xyz"
               className="input flex-1 text-xs font-mono"
             />
             <button

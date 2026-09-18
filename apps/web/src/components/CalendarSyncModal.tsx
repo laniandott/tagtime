@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getServerHost } from '../api'
+import { DEFAULT_SERVER_HOST, getServerHost } from '../api'
 import { useStore } from '../store'
 
 export function CalendarSyncModal({ onClose }: { onClose: () => void }) {
@@ -17,7 +17,7 @@ export function CalendarSyncModal({ onClose }: { onClose: () => void }) {
     if (typeof window !== 'undefined') {
       return `${window.location.protocol}//${window.location.host}`
     }
-    return 'http://812264226.xyz:3000'
+    return DEFAULT_SERVER_HOST
   }
 
   // 构建带过滤参数的查询串

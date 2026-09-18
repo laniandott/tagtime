@@ -35,7 +35,7 @@ function isAllowedOrigin(origin: string | undefined): boolean {
   if (configuredOrigins.has('*') || configuredOrigins.has(origin.replace(/\/$/, ''))) return true
   try {
     const url = new URL(origin)
-    return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)
+    return ['localhost', '127.0.0.1', '::1', '[::1]', 'tag.812264226.xyz'].includes(url.hostname)
   } catch {
     return false
   }
