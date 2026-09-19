@@ -159,7 +159,7 @@ async function normalizeAttachments(inputs: AttachmentInput[] | undefined): Prom
   return normalized
 }
 
-async function removeUploadIfUnreferenced(uploadPath: string): Promise<void> {
+export async function removeUploadIfUnreferenced(uploadPath: string): Promise<void> {
   const safe = safeUploadFile(uploadPath)
   const references = await prisma.attachment.count({ where: { path: safe.path } })
   if (references > 0) return

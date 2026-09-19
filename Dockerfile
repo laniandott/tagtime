@@ -50,5 +50,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "const http=require('http');const req=http.get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1))"
 
 # 启动：首次运行自动创建/更新数据库表（失败时保留日志便于排查），然后启动服务
-CMD ["sh", "-c", "cd apps/server && npx prisma db push --skip-generate; cd /app && node apps/server/dist/index.js"]
+CMD ["sh", "-c", "set -e; cd apps/server && npx prisma db push --skip-generate && cd /app && node apps/server/dist/index.js"]
 

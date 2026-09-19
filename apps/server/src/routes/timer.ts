@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import prisma from '../db.js'
 import { CONTENT_LIMITS } from '../config.js'
 import { singleQueryString } from './query.js'
+import { removeUploadIfUnreferenced } from './memos.js'
 
 const timeEntryInclude = {
   tag: { include: { category: true } },
@@ -318,10 +319,14 @@ export default async function timerRoutes(app: FastifyInstance) {
   // 删除一条时间记录
   app.delete('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
+    const memos = await prisma.memo.findMany({ where: { timeEntryId: id }, include: { attachments: true } })
     try {
       await prisma.timeEntry.delete({ where: { id } })
     } catch {
       return reply.code(404).send({ error: '计时记录不存在' })
+    }
+    for (const memo of memos) for (const attachment of memo.attachments) {
+      await removeUploadIfUnreferenced(attachment.path).catch(() => {})
     }
     return { ok: true }
   })

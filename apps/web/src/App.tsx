@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect } from 'react'
-import { Navigate, Routes, Route } from 'react-router-dom'
+import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import { useStore } from './store'
 import { syncNativeStatusBarTheme } from './nativeStatusBar'
@@ -9,6 +9,10 @@ const TodosPage = lazy(() => import('./pages/TodosPage'))
 const StatsPage = lazy(() => import('./pages/StatsPage'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
 const CalendarPage = lazy(() => import('./pages/CalendarPage'))
+const NotesPage = lazy(() => import('./pages/NotesPage'))
+const NoteEditorPage = lazy(() => import('./pages/NoteEditorPage'))
+const NotesGraphPage = lazy(() => import('./pages/NotesGraphPage'))
+const VaultPage = lazy(() => import('./pages/VaultPage'))
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
   constructor(props: any) {
@@ -90,8 +94,10 @@ export default function App() {
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/stats" element={<StatsPage />} />
             <Route path="/tags" element={<TagsPage />} />
-            {/* 旧版笔记链接平滑回到计时页，避免历史书签落到空白页。 */}
-            <Route path="/notes/*" element={<Navigate to="/" replace />} />
+            <Route path="/notes" element={<NotesPage />} />
+            <Route path="/notes/vault" element={<VaultPage />} />
+            <Route path="/notes/:id/graph" element={<NotesGraphPage />} />
+            <Route path="/notes/:id" element={<NoteEditorPage />} />
           </Routes>
         </Suspense>
       </Layout>

@@ -942,7 +942,13 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
     goals: [{ id: ids.goal, tagId: ids.tag, title: '同步目标', kind: 'tracking', type: 'count', target: 1, period: 'daily' }],
     todos: [{ id: ids.todo, title: '同步待办', status: 'pending', tagId: ids.tag, goalId: ids.goal }],
     timeEntries: [{ id: ids.entry, startTime: now, endTime: now, tagId: ids.tag, todoId: ids.todo }],
-    memos: [{ id: ids.memo, content: '同步备忘', tagId: ids.tag, timeEntryId: ids.entry }],
+    memos: [{
+      id: ids.memo,
+      content: '同步备忘',
+      tagId: ids.tag,
+      timeEntryId: ids.entry,
+      attachments: [{ filename: 'offline.jpg', path: '/uploads/offline.jpg', mimeType: 'image/jpeg', size: 12 }],
+    }],
   }
 
   const first = await app.inject({ method: 'POST', url: '/api/sync', payload })
@@ -954,6 +960,7 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 1)
   assert.equal(await prisma.timeEntry.count({ where: { id: ids.entry } }), 1)
   assert.equal(await prisma.memo.count({ where: { id: ids.memo } }), 1)
+  assert.equal(await prisma.attachment.count({ where: { memoId: ids.memo } }), 1)
 
   const repeat = await app.inject({ method: 'POST', url: '/api/sync', payload })
   assert.equal(repeat.statusCode, 200)
@@ -983,6 +990,46 @@ test('离线同步：按关系顺序写入、重复提交幂等、墓碑反向�
   assert.equal(await prisma.todo.count({ where: { id: ids.todo } }), 0)
   assert.equal(await prisma.timeEntry.count({ where: { id: ids.entry } }), 0)
   assert.equal(await prisma.memo.count({ where: { id: ids.memo } }), 0)
+})
+
+test('离线同步：旧修改和旧删除不能覆盖更新后的记录', async () => {
+  const id = `sync-conflict-${Date.now()}`
+  const at = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString()
+  const older = at(0)
+  const newer = at(1)
+  const deletedAt = at(2)
+
+  const create = await app.inject({
+    method: 'POST', url: '/api/sync',
+    payload: { cursor: 0, categories: [{ id, name: '新内容', createdAt: older, updatedAt: newer }] },
+  })
+  assert.equal(create.statusCode, 200)
+
+  const staleUpdate = await app.inject({
+    method: 'POST', url: '/api/sync',
+    payload: { cursor: create.json().cursor, categories: [{ id, name: '旧内容', createdAt: older, updatedAt: older }] },
+  })
+  assert.equal(staleUpdate.statusCode, 200)
+  assert.equal((await prisma.category.findUnique({ where: { id } }))?.name, '新内容')
+
+  const deleted = await app.inject({
+    method: 'POST', url: '/api/sync',
+    payload: { cursor: staleUpdate.json().cursor, categories: [{ id, deleted: true, updatedAt: deletedAt }] },
+  })
+  assert.equal(deleted.statusCode, 200)
+  const staleRecreate = await app.inject({
+    method: 'POST', url: '/api/sync',
+    payload: { cursor: deleted.json().cursor, categories: [{ id, name: '更旧的重建', createdAt: older, updatedAt: older }] },
+  })
+  assert.equal(staleRecreate.statusCode, 200)
+  assert.equal(await prisma.category.findUnique({ where: { id } }), null)
+
+  const freshRecreate = await app.inject({
+    method: 'POST', url: '/api/sync',
+    payload: { cursor: staleRecreate.json().cursor, categories: [{ id, name: '新的重建', createdAt: deletedAt, updatedAt: at(3) }] },
+  })
+  assert.equal(freshRecreate.statusCode, 200)
+  assert.equal((await prisma.category.findUnique({ where: { id } }))?.name, '新的重建')
 })
 
 test('计时启动：重复客户端 ID 只创建一条记录', async () => {

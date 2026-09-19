@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { api, getServerHost, normalizeServerHost, setServerHost } from '../api'
 import type { Category, Tag, Goal } from '../types'
+import { hasPendingChanges } from '../sync'
 
 const COLORS = ['#6d5efc', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#64748b']
 
@@ -728,6 +729,10 @@ function SystemSettingsSection() {
   }
 
   const handleClearCache = async () => {
+    if (hasPendingChanges()) {
+      setCacheMessage('当前有未同步数据，请先联网同步或导出后再清理缓存。')
+      return
+    }
     if (!confirm('确定要清理本地缓存吗？这不会影响服务器上的任何数据。')) return
 
     try {

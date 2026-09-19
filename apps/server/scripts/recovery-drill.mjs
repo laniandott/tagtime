@@ -16,13 +16,14 @@
 // 用法（仓库根，先构建服务端再跑）：
 //   npm run build -w apps/server
 //   npm run recovery:drill -w apps/server
-import { spawn, execSync } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const serverRoot = dirname(dirname(fileURLToPath(import.meta.url))) // apps/server
+const repoRoot = dirname(dirname(serverRoot))
 const distMain = join(serverRoot, 'dist', 'index.js')
 
 if (!existsSync(distMain)) {
@@ -37,12 +38,15 @@ const port = 20000 + Math.floor(Math.random() * 10000)
 
 // 临时库需要先有真实 schema；固定 Prisma CLI 环境，不依赖调用者 shell 是否设了 RUST_LOG
 function prepareDb() {
-  execSync('node node_modules/prisma/build/index.js db push --skip-generate --schema src/schema.prisma', {
-    cwd: serverRoot,
+  const prismaCli = existsSync(join(serverRoot, 'node_modules/prisma/build/index.js'))
+    ? join(serverRoot, 'node_modules/prisma/build/index.js')
+    : join(serverRoot, '..', '..', 'node_modules/prisma/build/index.js')
+  execFileSync(process.execPath, [prismaCli, 'db', 'push', '--skip-generate', '--schema', join(serverRoot, 'src', 'schema.prisma')], {
+    cwd: repoRoot,
     env: {
       ...process.env,
       DATABASE_URL: dbUrl,
-      RUST_LOG: process.env.RUST_LOG || 'info',
+      RUST_LOG: 'info',
       PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING: '1',
     },
     stdio: 'pipe',
@@ -138,6 +142,9 @@ async function makeResidual(abs, originalContent, title) {
 }
 
 async function assertRestored(note) {
+  const deadline = Date.now() + 5000
+  while (!existsSync(note.abs) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+  if (!existsSync(note.abs)) throw new Error(`恢复文件未在超时内出现：${note.abs}`)
   const now = readFileSync(note.abs, 'utf8')
   if (now !== note.content) throw new Error(`正文未从 .bak 恢复：期望 "${note.content}"，实际 "${now}"`)
   if (existsSync(`${note.abs}.tmp`)) throw new Error('未写完的 .tmp 应被清理，实际仍存在')

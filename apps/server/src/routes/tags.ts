@@ -165,7 +165,10 @@ export default async function tagRoutes(app: FastifyInstance) {
         const nextName = name?.trim() ?? existing.name
         const nextCategoryId = categoryId === undefined ? existing.categoryId : categoryId || null
         const nextParentId = parentId === undefined ? existing.parentId : parent?.id ?? null
-        if (parent && categoryId && parent.categoryId !== categoryId) {
+        const effectiveParent = parent ?? (nextParentId
+          ? await prisma.tag.findUnique({ where: { id: nextParentId }, select: { categoryId: true } })
+          : null)
+        if (effectiveParent && (effectiveParent.categoryId ?? null) !== (nextCategoryId ?? null)) {
           return reply.code(400).send({ error: '二级标签必须与上级标签属于同一分类' })
         }
         if (parentId !== undefined && !parent && await prisma.tag.count({ where: { parentId: id } })) {

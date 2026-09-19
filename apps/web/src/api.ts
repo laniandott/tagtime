@@ -20,7 +20,7 @@ import type {
   EntityLinkType,
   LinkedNoteEntry,
 } from './types'
-import { enqueuePending, loadCachedSnapshot, loadPendingQueue, runSync } from './sync'
+import { enqueuePending, loadCachedSnapshot, loadPendingQueue, runSync, updatePendingCount } from './sync'
 import { loadLocalBucket, saveLocalBucket, saveLocalRecord } from './localStore'
 
 export const DEFAULT_SERVER_HOST = 'https://tag.812264226.xyz'
@@ -317,10 +317,11 @@ export function hydrateTimeEntries(entries: TimeEntry[]): TimeEntry[] {
 }
 
 function queueOffline(bucket: OfflineBucket, item: Record<string, unknown>): any {
-  saveLocalRecord(bucket, item as { id: string; deleted?: boolean })
-  enqueuePending({ [bucket]: [item] } as any)
+  const queued = { ...item, updatedAt: new Date().toISOString() }
+  saveLocalRecord(bucket, queued as unknown as { id: string; deleted?: boolean })
+  enqueuePending({ [bucket]: [queued] } as any)
   void runSync()
-  return item
+  return queued
 }
 
 async function offlineList<T extends { id: string }>(request: () => Promise<T[]>, bucket: OfflineBucket, replace = true): Promise<T[]> {
@@ -350,6 +351,11 @@ function remember<T extends { id: string }>(bucket: OfflineBucket, item: T): T {
 
 function forget(bucket: OfflineBucket, id: string): void {
   saveLocalRecord(bucket, { id, deleted: true })
+  if (typeof localStorage === 'undefined') return
+  const queue = loadPendingQueue()
+  const next = { ...queue, [bucket]: queue[bucket].filter((item: any) => item?.id !== id) }
+  try { localStorage.setItem('tagtime.sync.pending', JSON.stringify(next)) } catch { /* best effort */ }
+  updatePendingCount()
 }
 
 function localTimeEntries(params?: { from?: string; to?: string; tagId?: string }): TimeEntry[] {
@@ -377,6 +383,16 @@ function localRunningEntries(): TimeEntry[] {
     if (entry.endTime || entry.dismissed) return false
     return !known || known.has(entry.id) || queuedIds.has(entry.id)
   })
+}
+
+function reconcileRunningCache(remoteRunning: TimeEntry[]): void {
+  const remoteIds = new Set(remoteRunning.map((entry) => entry.id))
+  const queuedIds = new Set((loadPendingQueue().timeEntries ?? []).map((entry: any) => entry?.id))
+  for (const entry of cachedBucket<TimeEntry>('timeEntries')) {
+    if (!entry.endTime && !entry.dismissed && !remoteIds.has(entry.id) && !queuedIds.has(entry.id)) {
+      saveLocalRecord('timeEntries', { id: entry.id, deleted: true })
+    }
+  }
 }
 
 function reconcilePendingCache(remotePending: TimeEntry[]): void {
@@ -540,6 +556,7 @@ export const api = {
         const requestVersion = timerMutationVersion
         void req<{ running: TimeEntry[]; serverTime: string }>('/timer/current').then((data) => {
           if (requestVersion !== timerMutationVersion) return
+          reconcileRunningCache(data.running)
           saveKnownRunningIds(data.running)
           for (const entry of data.running) saveLocalRecord('timeEntries', entry)
           emitTimerRefresh('current', data)
@@ -552,6 +569,7 @@ export const api = {
         if (requestVersion !== timerMutationVersion) {
           return { running: hydrateTimeEntries(localRunningEntries()), serverTime: data.serverTime }
         }
+        reconcileRunningCache(data.running)
         saveKnownRunningIds(data.running)
         for (const entry of data.running) saveLocalRecord('timeEntries', entry)
         return data
@@ -632,7 +650,8 @@ export const api = {
       if (params?.from) q.set('from', params.from)
       if (params?.to) q.set('to', params.to)
       if (params?.tagId) q.set('tagId', params.tagId)
-      return offlineList(async () => req<TimeEntry[]>(`/timer?${q}`), 'timeEntries', false).then((items) => hydrateTimeEntries(items).filter((entry) => {
+      const fullList = !params?.from && !params?.to && !params?.tagId
+      return offlineList(async () => req<TimeEntry[]>(`/timer?${q}`), 'timeEntries', fullList).then((items) => hydrateTimeEntries(items).filter((entry) => {
         const start = new Date(entry.startTime).getTime()
         return (!params?.from || start >= new Date(params.from).getTime()) &&
           (!params?.to || start <= new Date(params.to).getTime()) &&
@@ -689,13 +708,46 @@ export const api = {
         return queueOffline('timeEntries', { ...current, pendingResume: false }) as TimeEntry
       }
     },
-    terminateChain: (id: string, reason: string) =>
-      req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    terminateChain: async (id: string, reason: string) => {
+      try {
+        return await req<{ count: number }>(`/timer/${id}/terminate-chain`, { method: 'POST', body: JSON.stringify({ reason }) })
+      } catch (error) {
+        if (!isOfflineError(error)) throw error
+        const trimmed = reason.trim()
+        if (!trimmed) throw error
+        const now = new Date().toISOString()
+        const visited = new Set<string>()
+        let currentId: string | null = id
+        let count = 0
+        while (currentId && !visited.has(currentId)) {
+          visited.add(currentId)
+          const entry = cachedBucket<TimeEntry>('timeEntries').find((item) => item.id === currentId)
+          if (!entry) break
+          queueOffline('timeEntries', {
+            ...entry,
+            endTime: entry.endTime ?? now,
+            pendingResume: false,
+            dismissed: true,
+            dismissReason: trimmed,
+          })
+          count++
+          currentId = entry.interruptedFromId
+        }
+        if (!count) throw error
+        return { count }
+      }
+    },
     remove: async (id: string) => {
       try {
         await req(`/timer/${id}`, { method: 'DELETE' })
+        forget('timeEntries', id)
+        return null
       } catch (error) {
-        if (!(error instanceof ApiError && error.status === 404) && !isOfflineError(error)) throw error
+        if (error instanceof ApiError && error.status === 404) {
+          forget('timeEntries', id)
+          return null
+        }
+        if (!isOfflineError(error)) throw error
       }
       return queueOffline('timeEntries', { id, deleted: true })
     },
@@ -727,7 +779,8 @@ export const api = {
       if (params?.categoryId) q.set('categoryId', params.categoryId)
       if (params?.tagId) q.set('tagId', params.tagId)
       if (params?.repeatType) q.set('repeatType', params.repeatType)
-      return offlineList(async () => req<Todo[]>(`/todos?${q}`), 'todos', false).then((items) => items.filter((todo) =>
+      const fullList = !params?.status && !params?.categoryId && !params?.tagId && !params?.repeatType
+      return offlineList(async () => req<Todo[]>(`/todos?${q}`), 'todos', fullList).then((items) => items.filter((todo) =>
         (!params?.status || todo.status === params.status) &&
         (!params?.categoryId || todo.categoryId === params.categoryId) &&
         (!params?.tagId || todo.tagId === params.tagId) &&
@@ -865,7 +918,8 @@ export const api = {
       if (params?.to) q.set('to', params.to)
       if (params?.standaloneOnly) q.set('standaloneOnly', String(params.standaloneOnly))
       if (params?.type) q.set('type', params.type)
-      return offlineList(async () => req<Memo[]>(`/memos?${q}`), 'memos', false).then((items) => items.filter((memo) => {
+      const fullList = !params?.timeEntryId && !params?.tagId && !params?.days && !params?.from && !params?.to && !params?.standaloneOnly && !params?.type
+      return offlineList(async () => req<Memo[]>(`/memos?${q}`), 'memos', fullList).then((items) => items.filter((memo) => {
         if (params?.timeEntryId && memo.timeEntryId !== params.timeEntryId) return false
         if (params?.tagId && memo.tagId !== params.tagId) return false
         if (params?.type && memo.type !== params.type) return false

@@ -81,6 +81,7 @@ model TimeEntry {
   interrupts     TimeEntry[] @relation("InterruptChain")
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@index([tagId])
   @@index([startTime])
@@ -265,5 +266,17 @@ model NoteEntityLink {
 
   @@index([noteId, type])
   @@unique([noteId, type, entityKey])
+}
+
+/// Sync deletion tombstones prevent an older offline delete from removing a newer record.
+model SyncTombstone {
+  id        String   @id @default(cuid())
+  bucket    String
+  recordId  String
+  deletedAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([bucket, recordId])
+  @@index([deletedAt])
 }
 

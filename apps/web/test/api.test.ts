@@ -258,3 +258,21 @@ test('同步请求期间的新本地修改不会被旧服务器快照覆盖', as
   const local = JSON.parse(values.get('tagtime.local.timeEntries') ?? '[]')
   assert.equal(local.find((item: any) => item.id === 'local-entry')?.note, '新')
 })
+
+test('同步状态卡在 syncing 超过超时后会自动重试', async () => {
+  const values = installLocalStorage()
+  values.set('tagtime_server_url', 'http://sync.test')
+  values.set('tagtime.sync', JSON.stringify({
+    status: 'syncing', cursor: 1, lastSyncedAt: null, pendingCount: 0,
+    syncStartedAt: new Date(Date.now() - 61_000).toISOString(),
+  }))
+  setFetch(async (_input, init) => {
+    const body = init?.method === 'POST'
+      ? { cursor: 2, categories: [], tags: [], goals: [], todos: [], timeEntries: [], memos: [] }
+      : { cursor: 1, categories: [], tags: [], goals: [], todos: [], timeEntries: [], memos: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+
+  assert.equal(await runSync(), true)
+  assert.equal(JSON.parse(values.get('tagtime.sync') ?? '{}').status, 'synced')
+})

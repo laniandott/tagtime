@@ -17,8 +17,11 @@ import memoRoutes, { UPLOAD_DIR } from './routes/memos.js'
 import calendarRoutes from './routes/calendar.js'
 import calendarsRoutes from './routes/calendars.js'
 import syncRoutes from './routes/sync.js'
+import noteRoutes from './routes/notes.js'
 import { BODY_SIZE_LIMIT } from './config.js'
 import { isSafeUploadPath } from './upload-path.js'
+import prisma from './db.js'
+import { reconcileNotesOnStartup } from './notes.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -55,8 +58,14 @@ await app.register(multipart, {
   },
 })
 
-// 轻量存活检查：不访问数据库，避免健康检查本身放大数据库压力。
-app.get('/healthz', async () => ({ ok: true }))
+app.get('/healthz', async (_req, reply) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`
+    return { ok: true }
+  } catch {
+    return reply.code(503).send({ ok: false })
+  }
+})
 
 // 静态提供上传的媒体资源 (图片/视频)
 await app.register(fastifyStatic, {
@@ -77,6 +86,8 @@ await app.register(memoRoutes, { prefix: '/api/memos' })
 await app.register(calendarRoutes, { prefix: '/api/calendar' })
 await app.register(calendarsRoutes, { prefix: '/api/calendars' })
 await app.register(syncRoutes, { prefix: '/api/sync' })
+await app.register(noteRoutes, { prefix: '/api/notes' })
+await reconcileNotesOnStartup()
 
 // Serve built frontend (production)
 const webDist = join(__dirname, '..', '..', 'web', 'dist')

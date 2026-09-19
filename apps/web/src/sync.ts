@@ -9,6 +9,7 @@ export type SyncState = {
   lastSyncedAt: string | null
   pendingCount: number
   error?: string
+  syncStartedAt?: string
 }
 
 const STORAGE_KEY = 'tagtime.sync'
@@ -88,13 +89,15 @@ export async function runSync(): Promise<boolean> {
 
 async function runSyncInternal(): Promise<boolean> {
   const state = loadSyncState()
-  if (state.status === 'syncing') return false
-  saveSyncState({ ...state, status: 'syncing', error: undefined })
+  const startedAt = state.syncStartedAt ? Date.parse(state.syncStartedAt) : 0
+  if (state.status === 'syncing' && startedAt > 0 && Date.now() - startedAt < 60_000) return false
+  const syncStartedAt = new Date().toISOString()
+  saveSyncState({ ...state, status: 'syncing', syncStartedAt, error: undefined })
 
   try {
     const snapshot = await fetchSyncSnapshot()
     if (!snapshot) {
-      saveSyncState({ ...loadSyncState(), status: 'offline' })
+      saveSyncState({ ...loadSyncState(), status: 'offline', syncStartedAt: undefined })
       return false
     }
 
@@ -106,7 +109,7 @@ async function runSyncInternal(): Promise<boolean> {
     })
 
     if (!result) {
-      saveSyncState({ ...loadSyncState(), status: 'offline' })
+      saveSyncState({ ...loadSyncState(), status: 'offline', syncStartedAt: undefined })
       return false
     }
 
@@ -127,6 +130,7 @@ async function runSyncInternal(): Promise<boolean> {
       cursor: nextCursor,
       lastSyncedAt: new Date().toISOString(),
       pendingCount: Object.values(remaining).reduce((sum, items) => sum + items.length, 0),
+      syncStartedAt: undefined,
     })
     if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('tagtime-sync-complete'))
     return true
@@ -135,6 +139,7 @@ async function runSyncInternal(): Promise<boolean> {
       ...loadSyncState(),
       status: 'error',
       error: e?.message || '同步失败',
+      syncStartedAt: undefined,
     })
     return false
   }
